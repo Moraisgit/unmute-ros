@@ -61,12 +61,12 @@ services:
     environment:
       - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
     volumes:
-      - ./volumes/hf-cache:/root/.cache/huggingface
-      - ./volumes/cargo-registry-tts:/root/.cargo/registry
-      - ./volumes/tts-target:/app/target
-      - ./volumes/uv-cache:/root/.cache/uv
-      - /tmp/models/:/models
-      - ./volumes/tts-logs:/tmp/unmute_logs
+      - /mnt/.cache/huggingface:/root/.cache/huggingface
+      - /mnt/amorais/docker_unmute/cargo-registry-tts:/root/.cargo/registry
+      - /mnt/amorais/docker_unmute/tts-target:/app/target
+      - /mnt/amorais/docker_unmute/uv-cache:/root/.cache/uv
+      - /mnt/amorais/docker_unmute/tmp/models/:/models
+      - /mnt/amorais/docker_unmute/tts-logs:/tmp/unmute_logs
     deploy:
       resources:
         reservations:
@@ -84,12 +84,12 @@ services:
     environment:
       - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
     volumes:
-      - ./volumes/hf-cache:/root/.cache/huggingface
-      - ./volumes/cargo-registry-stt:/root/.cargo/registry
-      - ./volumes/stt-target:/app/target
-      - ./volumes/uv-cache:/root/.cache/uv
-      - /tmp/models/:/models
-      - ./volumes/stt-logs:/tmp/unmute_logs
+      - /mnt/.cache/huggingface:/root/.cache/huggingface
+      - /mnt/amorais/docker_unmute/cargo-registry-stt:/root/.cargo/registry
+      - /mnt/amorais/docker_unmute/stt-target:/app/target
+      - /mnt/amorais/docker_unmute/uv-cache:/root/.cache/uv
+      - /mnt/amorais/docker_unmute/tmp/models/:/models
+      - /mnt/amorais/docker_unmute/stt-logs:/tmp/unmute_logs
     deploy:
       resources:
         reservations:
@@ -114,8 +114,8 @@ services:
         "--gpu-memory-utilization=0.4",
       ]
     volumes:
-      - ./volumes/hf-cache:/root/.cache/huggingface
-      - ./volumes/vllm-cache:/root/.cache/vllm
+      - /mnt/.cache/huggingface:/root/.cache/huggingface
+      - /mnt/.cache/vllm:/root/.cache/vllm
     environment:
       - HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN
     deploy:
