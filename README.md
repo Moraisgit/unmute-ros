@@ -33,7 +33,7 @@ graph LR
 > If something isn't working for you, don't hesistate to open an issue. We'll do our best to help you figure out what's wrong.
 
 Requirements:
-- Hardware: a GPU with CUDA support and at least 16 GB memory.
+- Hardware: a GPU with CUDA support and at least 16 GB VRAM. Architecture must be x86_64, no aarch64 support is planned.
 - OS: Linux, or Windows with WSL ([installation instructions](https://ubuntu.com/desktop/wsl)). Running on Windows natively is not supported (see [#84](https://github.com/kyutai-labs/unmute/issues/84)). Neither is running on Mac (see [#74](https://github.com/kyutai-labs/unmute/issues/74)).
 
 We provide multiple ways of deploying your own [unmute.sh](unmute.sh):
@@ -210,6 +210,14 @@ System prompts like this are defined in [`unmute/llm/system_prompt.py`](unmute/l
 
 Note that the file is only loaded when the backend starts and is then cached, so if you change something in `voices.yaml`,
 you'll need to restart the backend.
+
+You can check out the available voices in our [voice repository](https://huggingface.co/kyutai/tts-voices).
+To use one of the voices, change the `path_on_server` field in [`voices.yaml`](voices.yaml) to the relative
+path of the voice you want, for example [`voice-donations/Haku.wav`](https://huggingface.co/kyutai/tts-voices/blob/main/voice-donations/Haku.wav).
+
+From June 2025 to February 2026, we also ran the [Unmute Voice Donation Project](https://unmute.sh/voice-donation),
+where volunteers provided their voices for use with Kyutai TTS 1.6B (used by Unmute) and other open-source TTS models.
+You can find these voices in the [voice repository](https://huggingface.co/kyutai/tts-voices) as well.
 
 ### Using external LLM servers
 
