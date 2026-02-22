@@ -475,6 +475,26 @@ async def receive_loop(
 
             if pcm.size:
                 await handler.receive((SAMPLE_RATE, pcm[np.newaxis, :]))
+                
+        elif isinstance(message, ora.InputAudioBufferAppendPcm):
+            # No Opus decoding needed!
+            raw_bytes = base64.b64decode(message.audio)
+            
+            # Convert raw bytes to Float32 or Int16 as specified
+            if message.format == "float32":
+                pcm = np.frombuffer(raw_bytes, dtype=np.float32)
+            else: # int16
+                # Convert int16 to float32 range [-1, 1] which Unmute expects internally
+                pcm_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+                pcm = audio_to_float32(pcm_int16)
+
+            message_to_record = ora.UnmuteInputAudioBufferAppendAnonymized(
+                number_of_samples=pcm.size,
+            )
+
+            if pcm.size:
+                await handler.receive((SAMPLE_RATE, pcm[np.newaxis, :]))
+                           
         elif isinstance(message, ora.SessionUpdate):
             await handler.update_session(message.session)
             await emit_queue.put(ora.SessionUpdated(session=message.session))
