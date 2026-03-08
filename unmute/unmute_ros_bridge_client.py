@@ -16,9 +16,9 @@ UNMUTE_WS_URL = os.environ.get(
     "UNMUTE_WS_URL", "ws://127.0.0.1:3333/api/v1/realtime"
 )
 PCM_FORMAT = os.environ.get("PCM_FORMAT", "int16")
-INPUT_SAMPLE_RATE = int(os.environ.get("INPUT_SAMPLE_RATE", "16000"))
+INPUT_SAMPLE_RATE = int(os.environ.get("INPUT_SAMPLE_RATE", "24000"))
 UNMUTE_SAMPLE_RATE = int(os.environ.get("UNMUTE_SAMPLE_RATE", "24000"))
-RESAMPLE_AUDIO = os.environ.get("RESAMPLE_AUDIO", "true").lower() == "true"
+RESAMPLE_AUDIO = os.environ.get("RESAMPLE_AUDIO", "false").lower() == "true"
 UNMUTE_VOICE = os.environ.get("UNMUTE_VOICE", None)
 ALLOW_RECORDING = os.environ.get("ALLOW_RECORDING", "false").lower() == "true"
 RECONNECT_DELAY_SEC = float(os.environ.get("RECONNECT_DELAY_SEC", "3.0"))
