@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import sys
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 import numpy as np
 import websockets
@@ -112,11 +114,73 @@ def _needs_boundary_space(last_char: str | None, new_text: str) -> bool:
 
 async def _send_initial_session_update(unmute_ws: websockets.ClientConnection) -> None:
     """Initialize Unmute session so generation can start when audio arrives."""
+
+    def _voices_url_from_ws_url(ws_url: str) -> str | None:
+        parsed = urlparse(ws_url)
+        if parsed.scheme not in {"ws", "wss"}:
+            return None
+
+        scheme = "https" if parsed.scheme == "wss" else "http"
+
+        # Support both /v1/realtime and /api/v1/realtime style paths.
+        path = parsed.path.rstrip("/")
+        if path.endswith("/v1/realtime"):
+            prefix = path[: -len("/v1/realtime")]
+            voices_path = f"{prefix}/v1/voices"
+        else:
+            voices_path = "/v1/voices"
+
+        return f"{scheme}://{parsed.netloc}{voices_path}"
+
+    def _resolve_voice_and_instructions(
+        requested_voice: str | None,
+    ) -> tuple[str | None, dict | None]:
+        if not requested_voice:
+            return None, None
+
+        voices_url = _voices_url_from_ws_url(UNMUTE_WS_URL)
+        if not voices_url:
+            logger.warning(
+                "Couldn't infer voices URL from UNMUTE_WS_URL=%s; using UNMUTE_VOICE as-is",
+                UNMUTE_WS_URL,
+            )
+            return requested_voice, None
+
+        try:
+            with urlopen(voices_url, timeout=5.0) as response:
+                voices = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch voices from %s (%s); using UNMUTE_VOICE as-is",
+                voices_url,
+                exc,
+            )
+            return requested_voice, None
+
+        for voice in voices:
+            source = voice.get("source") or {}
+            path_on_server = source.get("path_on_server")
+            if requested_voice in {voice.get("name"), path_on_server}:
+                return path_on_server or requested_voice, voice.get("instructions")
+
+        logger.warning(
+            "UNMUTE_VOICE=%s not found in /v1/voices; using value as raw voice id",
+            requested_voice,
+        )
+        return requested_voice, None
+
+    resolved_voice, resolved_instructions = await asyncio.to_thread(
+        _resolve_voice_and_instructions,
+        UNMUTE_VOICE,
+    )
+
     session = {
         "allow_recording": ALLOW_RECORDING,
     }
-    if UNMUTE_VOICE:
-        session["voice"] = UNMUTE_VOICE
+    if resolved_voice:
+        session["voice"] = resolved_voice
+    if resolved_instructions:
+        session["instructions"] = resolved_instructions
 
     payload = {
         "type": "session.update",
