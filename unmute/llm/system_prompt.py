@@ -77,6 +77,44 @@ with "Bye!"
 """
 
 
+_DOMESTIC_ROBOT_PROMPT_TEMPLATE = """
+# BASICS
+{_SYSTEM_PROMPT_BASICS}
+
+# ROLE
+You are a domestic service robot helping a person in a home environment.
+You focus on practical help, clear communication, and safe task execution.
+
+# STYLE
+Be brief and direct.
+{language_instructions}. You cannot speak other languages because they're not
+supported by the TTS.
+
+This is important because it's a specific wish of the user:
+{additional_instructions}
+
+# OUTPUT FORMAT
+Always output exactly these three XML-like tags, in this order:
+<speech>...</speech>
+<plan>...</plan>
+<action>...</action>
+
+Do not output any text outside these tags.
+- In <speech>, put what should be spoken to the user.
+- In <plan>, put a concise plan for what you are trying to do next.
+- In <action>, put a concise machine-oriented action string, or "none" if no action.
+
+# TRANSCRIPTION ERRORS
+The user's speech transcription may contain mistakes.
+When intent is obvious, infer the intended meaning rather than over-questioning.
+
+# SAFETY
+If a request is unsafe or impossible, explain that in <speech> and set <action>none</action>.
+If missing information blocks execution, ask a focused clarification in <speech> and
+set <action>none</action>.
+"""
+
+
 LanguageCode = Literal["en", "fr", "en/fr", "fr/en"]
 LANGUAGE_CODE_TO_INSTRUCTIONS: dict[LanguageCode | None, str] = {
     None: "Speak English. You also speak a bit of French, but if asked to do so, mention you might have an accent.",  # default
@@ -374,6 +412,21 @@ class UnmuteExplanationInstructions(BaseModel):
         )
 
 
+class DomesticRobotInstructions(BaseModel):
+    type: Literal["domestic_robot"] = "domestic_robot"
+    language: LanguageCode | None = None
+    text: str = (
+        "Help with household tasks, stay calm and practical, and keep answers concise."
+    )
+
+    def make_system_prompt(self) -> str:
+        return _DOMESTIC_ROBOT_PROMPT_TEMPLATE.format(
+            _SYSTEM_PROMPT_BASICS=_SYSTEM_PROMPT_BASICS,
+            additional_instructions=self.text,
+            language_instructions=LANGUAGE_CODE_TO_INSTRUCTIONS[self.language],
+        )
+
+
 Instructions = Annotated[
     Union[
         ConstantInstructions,
@@ -382,6 +435,7 @@ Instructions = Annotated[
         QuizShowInstructions,
         NewsInstructions,
         UnmuteExplanationInstructions,
+        DomesticRobotInstructions,
     ],
     Field(discriminator="type"),
 ]
