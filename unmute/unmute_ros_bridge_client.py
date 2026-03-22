@@ -40,6 +40,8 @@ logger = logging.getLogger("UnmuteBridge")
 
 
 def _supports_color_output() -> bool:
+    if os.environ.get("FORCE_COLOR") is not None:
+        return True
     return sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 
