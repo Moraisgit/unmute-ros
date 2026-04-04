@@ -26,6 +26,9 @@ import { useBackendServerUrl } from "./useBackendServerUrl";
 import { RECORDING_CONSENT_STORAGE_KEY } from "./ConsentModal";
 
 const Unmute = () => {
+  const monitorAutoConnect = ["1", "true", "yes"].includes(
+    (process.env.NEXT_PUBLIC_MONITOR_AUTO_CONNECT || "").toLowerCase(),
+  );
   const { isDevMode, showSubtitles } = useKeyboardShortcuts();
   const [debugDict, setDebugDict] = useState<object | null>(null);
   const [unmuteConfig, setUnmuteConfig] = useState<UnmuteConfig>(
@@ -124,6 +127,16 @@ const Unmute = () => {
   });
 
   const onConnectButtonPress = async () => {
+    if (monitorAutoConnect) {
+      if (!shouldConnect) {
+        setShouldConnect(true);
+      } else {
+        setShouldConnect(false);
+        shutdownAudio();
+      }
+      return;
+    }
+
     // If we're not connected yet
     if (!shouldConnect) {
       const mediaStream = await askMicrophoneAccess();
@@ -156,6 +169,13 @@ const Unmute = () => {
       shutdownAudio();
     }
   }, [readyState, shutdownAudio]);
+
+  // Monitor mode: connect automatically once backend health is available.
+  useEffect(() => {
+    if (!monitorAutoConnect) return;
+    if (!backendServerUrl || !healthStatus?.ok) return;
+    setShouldConnect(true);
+  }, [monitorAutoConnect, backendServerUrl, healthStatus?.ok]);
 
   // Handle incoming messages from the server
   useEffect(() => {
@@ -245,9 +265,17 @@ const Unmute = () => {
   // Disconnect when the voice or instruction changes.
   // TODO: If it's a voice change, immediately reconnect with the new voice.
   useEffect(() => {
+    if (monitorAutoConnect) {
+      return;
+    }
     setShouldConnect(false);
     shutdownAudio();
-  }, [shutdownAudio, unmuteConfig.voice, unmuteConfig.instructions]);
+  }, [
+    monitorAutoConnect,
+    shutdownAudio,
+    unmuteConfig.voice,
+    unmuteConfig.instructions,
+  ]);
 
   if (!healthStatus || !backendServerUrl) {
     return (
@@ -316,7 +344,7 @@ const Unmute = () => {
           </SlantedButton>
           {/* Maybe we don't need to explicitly show the status */}
           {/* {renderConnectionStatus(readyState, false)} */}
-          {microphoneAccess === "refused" && (
+          {!monitorAutoConnect && microphoneAccess === "refused" && (
             <div className="text-red">
               {"You'll need to allow microphone access to use the demo. " +
                 "Please check your browser settings."}
