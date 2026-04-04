@@ -77,7 +77,7 @@ with "Bye!"
 """
 
 _ROBOT_PLANNER_ACTIONS = """
-def move(destination: str): -> bool
+def move(destination: str) -> bool:
     '''
     Moves the robot to a specified location.
     Args:
@@ -86,7 +86,7 @@ def move(destination: str): -> bool
         bool: Indicates whether the move action was successful.
     '''
 
-def find_object(object: str, location: str): -> str
+def find_object(object: str, location: str) -> str:
     '''
     Find an object in the scene.
     Args:
@@ -96,7 +96,7 @@ def find_object(object: str, location: str): -> str
         str: The unique ID of the found object, which can be used in subsequent commands.
     '''
 
-def find_objects(object: str, location: str): -> list[str]
+def find_objects(object: str, location: str) -> list[str]:
     '''
     Find all objects of a certain type in the scene.
     Args:
@@ -106,7 +106,7 @@ def find_objects(object: str, location: str): -> list[str]
         list[str]: A list of unique IDs of the found objects, which can be used in subsequent commands.
     '''
 
-def pick(object: str): -> bool
+def pick(object: str) -> bool:
     '''
     Picks up an object identified by its unique ID. The object must have been found using find_object.
     Args:
@@ -115,7 +115,7 @@ def pick(object: str): -> bool
         bool: Indicates whether the pick action was successful.
     '''
 
-def place(destination: str): -> bool
+def place(destination: str) -> bool:
     '''
     Places the currently held object on a specified surface. The robot must already be holding an object.
     Args:
@@ -124,7 +124,7 @@ def place(destination: str): -> bool
         bool: Indicates whether the place action was successful.
     '''
 
-def find_person(location: str, person: str, person_info: str): -> str
+def find_person(location: str, person: str, person_info: str) -> str:
     '''
     Finds a person based on identifying features in a given location.
     Args:
@@ -135,7 +135,7 @@ def find_person(location: str, person: str, person_info: str): -> str
         str: The unique ID of the found person, which can be used in subsequent commands.
     '''
 
-def find_people(location: str, person: str, person_info: str): -> list[str]
+def find_people(location: str, person: str, person_info: str) -> list[str]:
     '''
     Finds all people matching the given description.
     Args:
@@ -146,7 +146,7 @@ def find_people(location: str, person: str, person_info: str): -> list[str]
         list[str]: A list of unique IDs of the found people, which can be used in subsequent commands.
     '''
 
-def guide(person_id: str, destination: str): -> bool
+def guide(person_id: str, destination: str) -> bool:
     '''
     Guides a person identified by their ID to a specified location. The person must have been found using find_person.
     Args:
@@ -156,7 +156,7 @@ def guide(person_id: str, destination: str): -> bool
         bool: Indicates whether the guide action was successful.
     '''
 
-def follow(person_id: str, destination: str): -> bool
+def follow(person_id: str, destination: str) -> bool:
     '''
     Follows a person identified by their ID. The person must have been found using find_person.
     Args:
@@ -166,7 +166,7 @@ def follow(person_id: str, destination: str): -> bool
         bool: Indicates whether the follow action was successful.
     '''
 
-def deliver(object: str, person: str): -> bool
+def deliver(object: str, person: str) -> bool:
     '''
     Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.
     Args:
@@ -184,7 +184,7 @@ You are Bob, an intelligent domestic service robot. You navigate real-world envi
 Your tone is helpful, friendly, brief, and naturally conversational.
 
 You act as both a task planner and a conversational agent. You reason, plan and speak about tasks and questions proposed by a human user.
-For this to work, your responses are externaly processed to distinguish your reasoning, plans, your speech and what you want to do next.
+For this to work, your responses are externally processed to distinguish your reasoning, plans, your speech and what you want to do next.
 
 # OUTPUT FORMAT
 For your responses to be processed this is extremely important!
@@ -211,7 +211,7 @@ You are only allowed to use these python functions (actions) in your JSON plans!
 {available_actions}
 
 ### 2.2 EXAMPLE OF JSON PLAN TRACE
-<plan>\n[\n  {\n    \"name\": \"find_object\",\n    \"source\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"find_object\",\n    \"source\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  }\n]\n</plan>
+<plan>\n[\n  {\n    \"name\": \"find_object\",\n    \"location\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"find_object\",\n    \"location\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  }\n]\n</plan>
 
 ## 3. SPEECH
 You need to communicate to the user what you intend to do and what you are doing.
@@ -227,7 +227,7 @@ Respond in the language the user is speaking.
 You have made a plan for some user request so now the exterior needs to know which actions need to be executed. You also output this in a JSON way.
 
 ### 4.1. EXAMPLE OF EXECUTION TRACE
-<exec>\n{\n  \"name\": \"find_object\",\n  \"source\": \"toilet\",\n  \"object\": \"toilet paper\",\n  \"output_variable\": \"found_object\"\n}\n</exec>
+<exec>\n{\n  \"name\": \"find_object\",\n  \"location\": \"toilet\",\n  \"object\": \"toilet paper\",\n  \"output_variable\": \"found_object\"\n}\n</exec>
 
 # IMPORTANT
 1. Follow the output rules. This is very important!
