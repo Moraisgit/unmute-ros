@@ -52,7 +52,7 @@ services:
       - "traefik.http.routers.backend.priority=100" # higher priority than frontend
       - "prometheus-port=80"
     ports:
-      - "8000:8000"
+      - "8000:80"
 
   tts:
     image: moshi-server:latest
