@@ -204,7 +204,7 @@ async def run_bridge() -> None:
                 logger.info("Connecting to Unmute websocket: %s", UNMUTE_WS_URL)
                 async with websockets.connect(
                     UNMUTE_WS_URL,
-                    subprotocols=["realtime"],
+                    subprotocols=[websockets.Subprotocol("realtime")],
                 ) as unmute_ws:
                     logger.info("Unmute socket connected")
                     await _send_initial_session_update(unmute_ws)
