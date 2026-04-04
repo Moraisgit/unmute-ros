@@ -15,6 +15,7 @@ import UnmuteConfigurator, {
 import CouldNotConnect, { HealthStatus } from "./CouldNotConnect";
 import UnmuteHeader from "./UnmuteHeader";
 import Subtitles from "./Subtitles";
+import ConversationLog from "./ConversationLog";
 import { ChatMessage, compressChatHistory } from "./chatHistory";
 import useWakeLock from "./useWakeLock";
 import ErrorMessages, { ErrorItem, makeErrorItem } from "./ErrorMessages";
@@ -291,6 +292,7 @@ const Unmute = () => {
           />
         </div>
         {showSubtitles && <Subtitles chatHistory={chatHistory} />}
+        <ConversationLog chatHistory={chatHistory} />
         <UnmuteConfigurator
           backendServerUrl={backendServerUrl}
           config={unmuteConfig}

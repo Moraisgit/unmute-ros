@@ -306,13 +306,27 @@ async def run_bridge() -> None:
                                 elif msg_type == "input_audio_buffer.speech_started":
                                     if DEBUG_STT_EVENTS:
                                         logger.debug("STT/VAD: speech_started")
+                                    await laptop_ws.send(
+                                        json.dumps({"type": "robot.speech_started"})
+                                    )
                                 elif msg_type == "input_audio_buffer.speech_stopped":
                                     if DEBUG_STT_EVENTS:
                                         logger.debug("STT/VAD: speech_stopped")
+                                    await laptop_ws.send(
+                                        json.dumps({"type": "robot.speech_stopped"})
+                                    )
                                 elif msg_type == "conversation.item.input_audio_transcription.delta":
                                     delta = data.get("delta", "")
                                     if PRINT_USER_TRANSCRIPT_DELTAS and delta:
                                         _print_stream_chunk("user", USER_LABEL, delta)
+                                    await laptop_ws.send(
+                                        json.dumps(
+                                            {
+                                                "type": "robot.user_text_delta",
+                                                "delta": delta,
+                                            }
+                                        )
+                                    )
                                 elif msg_type == "response.text.delta":
                                     text_delta = data.get("delta", "")
                                     if text_delta:
@@ -333,6 +347,9 @@ async def run_bridge() -> None:
                                         active_stream_speaker = None
                                     last_char_by_speaker["unmute"] = None
                                     text_deltas.clear()
+                                    await laptop_ws.send(
+                                        json.dumps({"type": "robot.response_complete"})
+                                    )
                                 elif msg_type == "conversation.item.input_audio_transcription.completed":
                                     if PRINT_USER_TRANSCRIPT_DELTAS and active_stream_speaker == "user":
                                         print("", flush=True)
