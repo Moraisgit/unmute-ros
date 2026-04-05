@@ -15,8 +15,12 @@ const normalizeStreamingText = (content: string): string => {
 
 const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const openFullscreenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const closeFullscreenButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusedElementRef = useRef<HTMLElement | null>(null);
   const [isAutoScrollEnabled, setIsAutoScrollEnabled] = useState(true);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const fullscreenTitleId = "conversation-log-fullscreen-title";
 
   const visibleMessages = useMemo(
     () =>
@@ -38,6 +42,9 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
   useEffect(() => {
     if (!isFullscreen) return;
 
+    previousFocusedElementRef.current = document.activeElement as HTMLElement | null;
+    closeFullscreenButtonRef.current?.focus();
+
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setIsFullscreen(false);
@@ -51,6 +58,7 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener("keydown", onEscape);
+      previousFocusedElementRef.current?.focus();
     };
   }, [isFullscreen]);
 
@@ -128,6 +136,7 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
                 <span className="text-xs text-lightgray">auto-scroll paused</span>
               )}
               <button
+                ref={openFullscreenButtonRef}
                 type="button"
                 onClick={() => setIsFullscreen(true)}
                 className="text-xs md:text-sm uppercase tracking-wide border border-lightgray/70 px-2 py-1 rounded-sm text-offwhite hover:border-offwhite"
@@ -143,11 +152,16 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
       {isFullscreen && (
         <div className="fixed inset-0 z-40 bg-black/70 p-6 md:p-16">
           <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={fullscreenTitleId}
             className="w-full h-full flex flex-col"
-            aria-label="Conversation log fullscreen"
           >
             <div className="mb-2 flex items-center justify-between gap-2">
-              <h2 className="text-sm md:text-base uppercase tracking-wide text-textgray">
+              <h2
+                id={fullscreenTitleId}
+                className="text-sm md:text-base uppercase tracking-wide text-textgray"
+              >
                 Conversation log
               </h2>
               <div className="flex items-center gap-3">
@@ -155,6 +169,7 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
                   <span className="text-xs text-lightgray">auto-scroll paused</span>
                 )}
                 <button
+                  ref={closeFullscreenButtonRef}
                   type="button"
                   onClick={() => setIsFullscreen(false)}
                   className="text-xs md:text-sm uppercase tracking-wide border border-lightgray/70 px-2 py-1 rounded-sm text-offwhite hover:border-offwhite"
