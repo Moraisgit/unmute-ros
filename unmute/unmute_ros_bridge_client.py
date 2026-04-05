@@ -319,14 +319,15 @@ async def run_bridge() -> None:
                                     delta = data.get("delta", "")
                                     if PRINT_USER_TRANSCRIPT_DELTAS and delta:
                                         _print_stream_chunk("user", USER_LABEL, delta)
-                                    await laptop_ws.send(
-                                        json.dumps(
-                                            {
-                                                "type": "robot.user_text_delta",
-                                                "delta": delta,
-                                            }
+                                    if delta:
+                                        await laptop_ws.send(
+                                            json.dumps(
+                                                {
+                                                    "type": "robot.user_text_delta",
+                                                    "delta": delta,
+                                                }
+                                            )
                                         )
-                                    )
                                 elif msg_type == "response.text.delta":
                                     text_delta = data.get("delta", "")
                                     if text_delta:
