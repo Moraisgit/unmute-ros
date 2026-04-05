@@ -172,11 +172,43 @@ const Unmute = () => {
 
   // Monitor mode: connect automatically once backend health is available.
   useEffect(() => {
-    if (!monitorAutoConnect) return;
-    if (!backendServerUrl || !healthStatus?.ok) return;
-    setShouldConnect(true);
-  }, [monitorAutoConnect, backendServerUrl, healthStatus?.ok]);
+    if (!monitorAutoConnect || !backendServerUrl) return;
+    if (shouldConnect) return;
 
+    if (healthStatus?.ok) {
+      setShouldConnect(true);
+      return;
+    }
+
+    let cancelled = false;
+
+    const pollHealth = async () => {
+      try {
+        const response = await fetch(
+          new URL("/v1/health", backendServerUrl).toString(),
+          { cache: "no-store" },
+        );
+        if (!response.ok) return;
+
+        const polledHealthStatus = (await response.json()) as HealthStatus;
+        if (!cancelled && polledHealthStatus.ok) {
+          setShouldConnect(true);
+        }
+      } catch {
+        // Keep polling while monitor auto-connect is enabled.
+      }
+    };
+
+    void pollHealth();
+    const intervalId = window.setInterval(() => {
+      void pollHealth();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [monitorAutoConnect, backendServerUrl, healthStatus?.ok, shouldConnect]);
   // Handle incoming messages from the server
   useEffect(() => {
     if (lastMessage === null) return;
