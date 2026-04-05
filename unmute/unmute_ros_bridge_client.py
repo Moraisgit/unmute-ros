@@ -39,6 +39,13 @@ logging.basicConfig(
 logger = logging.getLogger("UnmuteBridge")
 
 
+class SessionResetRequested(Exception):
+    def __init__(self, source: str, reason: str) -> None:
+        super().__init__(f"Session reset requested by {source}: {reason}")
+        self.source = source
+        self.reason = reason
+
+
 def _supports_color_output() -> bool:
     if os.environ.get("FORCE_COLOR") is not None:
         return True
@@ -200,171 +207,191 @@ async def run_bridge() -> None:
             logger.info("Connecting to laptop audio websocket: %s", LAPTOP_WS_URL)
             async with websockets.connect(LAPTOP_WS_URL) as laptop_ws:
                 logger.info("Laptop socket connected")
+                while True:
+                    logger.info("Connecting to Unmute websocket: %s", UNMUTE_WS_URL)
+                    async with websockets.connect(
+                        UNMUTE_WS_URL,
+                        subprotocols=[websockets.Subprotocol("realtime")],
+                    ) as unmute_ws:
+                        logger.info("Unmute socket connected")
+                        await _send_initial_session_update(unmute_ws)
+                        logger.info(
+                            (
+                                "Bridge active (pcm_format=%s, allow_recording=%s, "
+                                "resample=%s, input_sr=%s, unmute_sr=%s)"
+                            ),
+                            PCM_FORMAT,
+                            ALLOW_RECORDING,
+                            RESAMPLE_AUDIO,
+                            INPUT_SAMPLE_RATE,
+                            UNMUTE_SAMPLE_RATE,
+                        )
 
-                logger.info("Connecting to Unmute websocket: %s", UNMUTE_WS_URL)
-                async with websockets.connect(
-                    UNMUTE_WS_URL,
-                    subprotocols=[websockets.Subprotocol("realtime")],
-                ) as unmute_ws:
-                    logger.info("Unmute socket connected")
-                    await _send_initial_session_update(unmute_ws)
-                    logger.info(
-                        (
-                            "Bridge active (pcm_format=%s, allow_recording=%s, "
-                            "resample=%s, input_sr=%s, unmute_sr=%s)"
-                        ),
-                        PCM_FORMAT,
-                        ALLOW_RECORDING,
-                        RESAMPLE_AUDIO,
-                        INPUT_SAMPLE_RATE,
-                        UNMUTE_SAMPLE_RATE,
-                    )
+                        async def forward_audio_to_unmute() -> None:
+                            packet_count = 0
+                            async for message in laptop_ws:
+                                try:
+                                    data = json.loads(message)
+                                except json.JSONDecodeError:
+                                    continue
+                                msg_type = data.get("type")
 
-                    async def forward_audio_to_unmute() -> None:
-                        packet_count = 0
-                        async for message in laptop_ws:
-                            try:
-                                data = json.loads(message)
-                                if data.get("type") != "audio":
+                                if msg_type == "bridge.reset_session":
+                                    source = data.get("source", "unknown")
+                                    reason = data.get("reason", "unspecified")
+                                    raise SessionResetRequested(source=source, reason=reason)
+
+                                if msg_type != "audio":
                                     continue
 
                                 packet_count += 1
 
-                                outgoing_audio_b64 = data["data"]
-                                outgoing_format = PCM_FORMAT
+                                try:
+                                    outgoing_audio_b64 = data["data"]
+                                    outgoing_format = PCM_FORMAT
 
-                                mic_audio_f32 = _to_float32_pcm(data["data"], PCM_FORMAT)
+                                    mic_audio_f32 = _to_float32_pcm(data["data"], PCM_FORMAT)
 
-                                if (
-                                    DEBUG_MIC_INPUT
-                                    and packet_count % max(1, DEBUG_MIC_EVERY_N_PACKETS) == 0
-                                ):
-                                    rms, peak = _audio_level_stats(mic_audio_f32)
-                                    logger.info(
-                                        (
-                                            "Mic input packet=%s samples=%s rms=%.4f peak=%.4f "
-                                            "in_format=%s"
-                                        ),
-                                        packet_count,
-                                        mic_audio_f32.size,
-                                        rms,
-                                        peak,
-                                        PCM_FORMAT,
-                                    )
-
-                                if RESAMPLE_AUDIO and INPUT_SAMPLE_RATE != UNMUTE_SAMPLE_RATE:
-                                    resampled = _resample_linear(
-                                        mic_audio_f32,
-                                        src_rate=INPUT_SAMPLE_RATE,
-                                        dst_rate=UNMUTE_SAMPLE_RATE,
-                                    )
-                                    outgoing_audio_b64 = _encode_float32_b64(resampled)
-                                    outgoing_format = "float32"
-
-                                unmute_msg = {
-                                    "type": "unmute.input_audio_buffer.append_pcm",
-                                    "audio": outgoing_audio_b64,
-                                    "format": outgoing_format,
-                                }
-                                await unmute_ws.send(json.dumps(unmute_msg))
-                            except Exception as exc:
-                                logger.error("Error forwarding audio to Unmute: %s", exc)
-
-                    async def forward_response_to_laptop() -> None:
-                        text_deltas: list[str] = []
-                        active_stream_speaker: str | None = None
-                        last_char_by_speaker: dict[str, str | None] = {
-                            "user": None,
-                            "unmute": None,
-                        }
-
-                        def _print_stream_chunk(speaker: str, label: str, text: str) -> None:
-                            nonlocal active_stream_speaker
-                            if not text:
-                                return
-                            if active_stream_speaker != speaker:
-                                if active_stream_speaker is not None:
-                                    print("", flush=True)
-                                print(f"{label} ", end="", flush=True)
-                                active_stream_speaker = speaker
-                            if _needs_boundary_space(last_char_by_speaker[speaker], text):
-                                print(" ", end="", flush=True)
-                            print(text, end="", flush=True)
-                            last_char_by_speaker[speaker] = text[-1]
-
-                        async for message in unmute_ws:
-                            try:
-                                data = json.loads(message)
-                                msg_type = data.get("type")
-
-                                if msg_type == "response.audio.delta":
-                                    payload = {
-                                        "type": "robot.voice_audio",
-                                        "audio": data["delta"],
-                                    }
-                                    await laptop_ws.send(json.dumps(payload))
-                                elif msg_type == "input_audio_buffer.speech_started":
-                                    if DEBUG_STT_EVENTS:
-                                        logger.debug("STT/VAD: speech_started")
-                                    await laptop_ws.send(
-                                        json.dumps({"type": "robot.speech_started"})
-                                    )
-                                elif msg_type == "input_audio_buffer.speech_stopped":
-                                    if DEBUG_STT_EVENTS:
-                                        logger.debug("STT/VAD: speech_stopped")
-                                    await laptop_ws.send(
-                                        json.dumps({"type": "robot.speech_stopped"})
-                                    )
-                                elif msg_type == "conversation.item.input_audio_transcription.delta":
-                                    delta = data.get("delta", "")
-                                    if PRINT_USER_TRANSCRIPT_DELTAS and delta:
-                                        _print_stream_chunk("user", USER_LABEL, delta)
-                                    if delta:
-                                        await laptop_ws.send(
-                                            json.dumps(
-                                                {
-                                                    "type": "robot.user_text_delta",
-                                                    "delta": delta,
-                                                }
-                                            )
+                                    if (
+                                        DEBUG_MIC_INPUT
+                                        and packet_count % max(1, DEBUG_MIC_EVERY_N_PACKETS) == 0
+                                    ):
+                                        rms, peak = _audio_level_stats(mic_audio_f32)
+                                        logger.info(
+                                            (
+                                                "Mic input packet=%s samples=%s rms=%.4f peak=%.4f "
+                                                "in_format=%s"
+                                            ),
+                                            packet_count,
+                                            mic_audio_f32.size,
+                                            rms,
+                                            peak,
+                                            PCM_FORMAT,
                                         )
-                                elif msg_type == "response.text.delta":
-                                    text_delta = data.get("delta", "")
-                                    if text_delta:
-                                        text_deltas.append(text_delta)
-                                        if PRINT_TEXT_DELTAS:
-                                            _print_stream_chunk(
-                                                "unmute", UNMUTE_LABEL, text_delta
-                                            )
-                                    payload = {
-                                        "type": "robot.text",
-                                        "text": text_delta,
-                                    }
-                                    await laptop_ws.send(json.dumps(payload))
-                                elif msg_type == "response.text.done":
-                                    # Streaming-only mode: no final full-sentence print.
-                                    if active_stream_speaker == "unmute":
-                                        print("", flush=True)
-                                        active_stream_speaker = None
-                                    last_char_by_speaker["unmute"] = None
-                                    text_deltas.clear()
-                                    await laptop_ws.send(
-                                        json.dumps({"type": "robot.response_complete"})
-                                    )
-                                elif msg_type == "conversation.item.input_audio_transcription.completed":
-                                    if PRINT_USER_TRANSCRIPT_DELTAS and active_stream_speaker == "user":
-                                        print("", flush=True)
-                                        active_stream_speaker = None
-                                    last_char_by_speaker["user"] = None
-                            except Exception as exc:
-                                logger.error(
-                                    "Error forwarding Unmute response: %s", exc
-                                )
 
-                    await asyncio.gather(
-                        forward_audio_to_unmute(),
-                        forward_response_to_laptop(),
-                    )
+                                    if RESAMPLE_AUDIO and INPUT_SAMPLE_RATE != UNMUTE_SAMPLE_RATE:
+                                        resampled = _resample_linear(
+                                            mic_audio_f32,
+                                            src_rate=INPUT_SAMPLE_RATE,
+                                            dst_rate=UNMUTE_SAMPLE_RATE,
+                                        )
+                                        outgoing_audio_b64 = _encode_float32_b64(resampled)
+                                        outgoing_format = "float32"
+
+                                    unmute_msg = {
+                                        "type": "unmute.input_audio_buffer.append_pcm",
+                                        "audio": outgoing_audio_b64,
+                                        "format": outgoing_format,
+                                    }
+                                    await unmute_ws.send(json.dumps(unmute_msg))
+                                except Exception as exc:
+                                    logger.error("Error forwarding audio to Unmute: %s", exc)
+
+                        async def forward_response_to_laptop() -> None:
+                            text_deltas: list[str] = []
+                            active_stream_speaker: str | None = None
+                            last_char_by_speaker: dict[str, str | None] = {
+                                "user": None,
+                                "unmute": None,
+                            }
+
+                            def _print_stream_chunk(speaker: str, label: str, text: str) -> None:
+                                nonlocal active_stream_speaker
+                                if not text:
+                                    return
+                                if active_stream_speaker != speaker:
+                                    if active_stream_speaker is not None:
+                                        print("", flush=True)
+                                    print(f"{label} ", end="", flush=True)
+                                    active_stream_speaker = speaker
+                                if _needs_boundary_space(last_char_by_speaker[speaker], text):
+                                    print(" ", end="", flush=True)
+                                print(text, end="", flush=True)
+                                last_char_by_speaker[speaker] = text[-1]
+
+                            async for message in unmute_ws:
+                                try:
+                                    data = json.loads(message)
+                                    msg_type = data.get("type")
+
+                                    if msg_type == "response.audio.delta":
+                                        payload = {
+                                            "type": "robot.voice_audio",
+                                            "audio": data["delta"],
+                                        }
+                                        await laptop_ws.send(json.dumps(payload))
+                                    elif msg_type == "input_audio_buffer.speech_started":
+                                        if DEBUG_STT_EVENTS:
+                                            logger.debug("STT/VAD: speech_started")
+                                        await laptop_ws.send(
+                                            json.dumps({"type": "robot.speech_started"})
+                                        )
+                                    elif msg_type == "input_audio_buffer.speech_stopped":
+                                        if DEBUG_STT_EVENTS:
+                                            logger.debug("STT/VAD: speech_stopped")
+                                        await laptop_ws.send(
+                                            json.dumps({"type": "robot.speech_stopped"})
+                                        )
+                                    elif msg_type == "conversation.item.input_audio_transcription.delta":
+                                        delta = data.get("delta", "")
+                                        if PRINT_USER_TRANSCRIPT_DELTAS and delta:
+                                            _print_stream_chunk("user", USER_LABEL, delta)
+                                        if delta:
+                                            await laptop_ws.send(
+                                                json.dumps(
+                                                    {
+                                                        "type": "robot.user_text_delta",
+                                                        "delta": delta,
+                                                    }
+                                                )
+                                            )
+                                    elif msg_type == "response.text.delta":
+                                        text_delta = data.get("delta", "")
+                                        if text_delta:
+                                            text_deltas.append(text_delta)
+                                            if PRINT_TEXT_DELTAS:
+                                                _print_stream_chunk(
+                                                    "unmute", UNMUTE_LABEL, text_delta
+                                                )
+                                        payload = {
+                                            "type": "robot.text",
+                                            "text": text_delta,
+                                        }
+                                        await laptop_ws.send(json.dumps(payload))
+                                    elif msg_type == "response.text.done":
+                                        # Streaming-only mode: no final full-sentence print.
+                                        if active_stream_speaker == "unmute":
+                                            print("", flush=True)
+                                            active_stream_speaker = None
+                                        last_char_by_speaker["unmute"] = None
+                                        text_deltas.clear()
+                                        await laptop_ws.send(
+                                            json.dumps({"type": "robot.response_complete"})
+                                        )
+                                    elif msg_type == "conversation.item.input_audio_transcription.completed":
+                                        if PRINT_USER_TRANSCRIPT_DELTAS and active_stream_speaker == "user":
+                                            print("", flush=True)
+                                            active_stream_speaker = None
+                                        last_char_by_speaker["user"] = None
+                                except Exception as exc:
+                                    logger.error(
+                                        "Error forwarding Unmute response: %s", exc
+                                    )
+
+                        try:
+                            await asyncio.gather(
+                                forward_audio_to_unmute(),
+                                forward_response_to_laptop(),
+                            )
+                        except SessionResetRequested as exc:
+                            logger.info(
+                                "Restart requested from %s (%s). Reconnecting Unmute websocket to reset session context.",
+                                exc.source,
+                                exc.reason,
+                            )
+                            continue
+                        
+                    logger.info("Unmute socket disconnected; reconnecting...")
 
         except Exception as exc:
             logger.error("Bridge connection error: %s", exc)

@@ -40,6 +40,7 @@ const Unmute = () => {
   const { microphoneAccess, askMicrophoneAccess } = useMicrophoneAccess();
 
   const [shouldConnect, setShouldConnect] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
   const backendServerUrl = useBackendServerUrl();
   const [webSocketUrl, setWebSocketUrl] = useState<string | null>(null);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
@@ -156,13 +157,39 @@ const Unmute = () => {
     }
   };
 
+  const onRestartConversationButtonPress = async () => {
+    if (isRestarting) return;
+
+    setIsRestarting(true);
+    setRawChatHistory([]);
+
+    try {
+      if (readyState === ReadyState.OPEN) {
+        sendMessage(
+          JSON.stringify({
+            type: "bridge.reset_session",
+            reason: "ui_restart_button",
+          }),
+        );
+      }
+
+      setShouldConnect(false);
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+      setShouldConnect(true);
+    } finally {
+      setIsRestarting(false);
+    }
+  };
+
   // If the websocket connection is closed, shut down the audio processing
   useEffect(() => {
     if (readyState === ReadyState.CLOSING || readyState === ReadyState.CLOSED) {
       setShouldConnect(false);
-      shutdownAudio();
+      if (!isRestarting) {
+        shutdownAudio();
+      }
     }
-  }, [readyState, shutdownAudio]);
+  }, [isRestarting, readyState, shutdownAudio]);
 
   // Monitor mode: connect automatically once backend health is available.
   useEffect(() => {
@@ -362,11 +389,28 @@ const Unmute = () => {
             {"download recording"}
           </SlantedButton>
           <SlantedButton
-            onClick={onConnectButtonPress}
-            kind={monitorAutoConnect ? "disabled" : shouldConnect ? "secondary" : "primary"}
+            onClick={onRestartConversationButtonPress}
+            kind={isRestarting ? "disabled" : "secondary"}
             extraClasses="w-full max-w-96"
           >
-            {monitorAutoConnect ? "monitor mode" : shouldConnect ? "disconnect" : "connect"}
+            {isRestarting ? "restarting..." : "restart conversation"}
+          </SlantedButton>
+          <SlantedButton
+            onClick={onConnectButtonPress}
+            kind={
+              monitorAutoConnect || isRestarting
+                ? "disabled"
+                : shouldConnect
+                  ? "secondary"
+                  : "primary"
+            }
+            extraClasses="w-full max-w-96"
+          >
+            {monitorAutoConnect
+              ? "monitor mode"
+              : shouldConnect
+                ? "disconnect"
+                : "connect"}
           </SlantedButton>
           {/* Maybe we don't need to explicitly show the status */}
           {/* {renderConnectionStatus(readyState, false)} */}
