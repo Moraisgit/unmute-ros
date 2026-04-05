@@ -128,12 +128,6 @@ const Unmute = () => {
 
   const onConnectButtonPress = async () => {
     if (monitorAutoConnect) {
-      if (!shouldConnect) {
-        setShouldConnect(true);
-      } else {
-        setShouldConnect(false);
-        shutdownAudio();
-      }
       return;
     }
 
@@ -369,10 +363,10 @@ const Unmute = () => {
           </SlantedButton>
           <SlantedButton
             onClick={onConnectButtonPress}
-            kind={shouldConnect ? "secondary" : "primary"}
+            kind={monitorAutoConnect ? "disabled" : shouldConnect ? "secondary" : "primary"}
             extraClasses="w-full max-w-96"
           >
-            {shouldConnect ? "disconnect" : "connect"}
+            {monitorAutoConnect ? "monitor mode" : shouldConnect ? "disconnect" : "connect"}
           </SlantedButton>
           {/* Maybe we don't need to explicitly show the status */}
           {/* {renderConnectionStatus(readyState, false)} */}
