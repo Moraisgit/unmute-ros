@@ -284,6 +284,12 @@ async def run_bridge() -> None:
                                         "format": outgoing_format,
                                     }
                                     await unmute_ws.send(json.dumps(unmute_msg))
+                                except websockets.exceptions.ConnectionClosed as exc:
+                                    logger.info(
+                                        "Unmute websocket closed while forwarding audio; reconnecting: %s",
+                                        exc,
+                                    )
+                                    raise
                                 except Exception as exc:
                                     logger.error("Error forwarding audio to Unmute: %s", exc)
 
@@ -378,18 +384,47 @@ async def run_bridge() -> None:
                                         "Error forwarding Unmute response: %s", exc
                                     )
 
-                        try:
-                            await asyncio.gather(
-                                forward_audio_to_unmute(),
-                                forward_response_to_laptop(),
-                            )
-                        except SessionResetRequested as exc:
+                        bridge_tasks = (
+                            asyncio.create_task(forward_audio_to_unmute()),
+                            asyncio.create_task(forward_response_to_laptop()),
+                        )
+
+                        done, pending = await asyncio.wait(
+                            bridge_tasks,
+                            return_when=asyncio.FIRST_EXCEPTION,
+                        )
+
+                        for task in pending:
+                            task.cancel()
+
+                        results = await asyncio.gather(*bridge_tasks, return_exceptions=True)
+
+                        reset_request: SessionResetRequested | None = None
+                        unexpected_error: Exception | None = None
+                        for task, result in zip(bridge_tasks, results):
+                            if isinstance(result, SessionResetRequested):
+                                reset_request = result
+                                continue
+                            if isinstance(result, asyncio.CancelledError):
+                                continue
+                            if isinstance(result, Exception):
+                                if task in done and unexpected_error is None:
+                                    unexpected_error = result
+
+                        if reset_request is not None:
+                            exc = reset_request
                             logger.info(
                                 "Restart requested from %s (%s). Reconnecting Unmute websocket to reset session context.",
                                 exc.source,
                                 exc.reason,
                             )
                             continue
+
+                        if unexpected_error is not None:
+                            raise unexpected_error
+
+                        logger.info("Unmute stream task completed; reconnecting websocket...")
+                        continue
                         
                     logger.info("Unmute socket disconnected; reconnecting...")
 
