@@ -206,7 +206,12 @@ const Unmute = () => {
     const pollHealth = async () => {
       try {
         const response = await fetch(
-          new URL("/v1/health", backendServerUrl).toString(),
+          new URL(
+            "v1/health",
+            backendServerUrl.endsWith("/")
+              ? backendServerUrl
+              : backendServerUrl + "/",
+          ).toString(),
           { cache: "no-store" },
         );
         if (!response.ok) return;
