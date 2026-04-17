@@ -10,6 +10,8 @@ from urllib.request import urlopen
 import numpy as np
 import websockets
 
+from unmute.llm.unmute_tag_parser import LLMTagPrinter
+
 # Defaults target the "ROS on laptop + remote Unmute over SSH tunnel" setup.
 # Example tunnel:
 #   ssh -N -L 3333:localhost:80 <remote-host>
@@ -30,6 +32,12 @@ DEBUG_MIC_EVERY_N_PACKETS = int(os.environ.get("DEBUG_MIC_EVERY_N_PACKETS", "25"
 DEBUG_STT_EVENTS = os.environ.get("DEBUG_STT_EVENTS", "false").lower() == "true"
 PRINT_USER_TRANSCRIPT_DELTAS = (
     os.environ.get("PRINT_USER_TRANSCRIPT_DELTAS", "true").lower() == "true"
+)
+DEBUG_LLM_OUTPUT_TAGS = (
+    os.environ.get("DEBUG_LLM_OUTPUT_TAGS", "false").lower() == "true"
+)
+DEBUG_LLM_RAW_OUTPUT = (
+    os.environ.get("DEBUG_LLM_RAW_OUTPUT", "false").lower() == "true"
 )
 
 logging.basicConfig(
@@ -61,6 +69,17 @@ def _make_label(tag: str, color_code: str) -> str:
 
 USER_LABEL = _make_label("User", "\033[92m")
 UNMUTE_LABEL = _make_label("Unmute", "\033[96m")
+REASONING_LABEL = _make_label("Unmute - Reasoning", "\033[95m")
+PLAN_LABEL = _make_label("Unmute - Plan", "\033[93m")
+SPEECH_TAG_LABEL = _make_label("Unmute - Speech", "\033[96m")
+EXEC_LABEL = _make_label("Unmute - Exec", "\033[94m")
+RAW_LLM_LABEL = _make_label("Unmute - Raw LLM", "\033[36m")
+TAG_LABELS: dict[str, str] = {
+    "reasoning": REASONING_LABEL,
+    "plan": PLAN_LABEL,
+    "speech": SPEECH_TAG_LABEL,
+    "exec": EXEC_LABEL,
+}
 
 
 def _to_float32_pcm(raw_audio_b64: str, pcm_format: str) -> np.ndarray:
@@ -327,7 +346,19 @@ async def run_bridge() -> None:
                             last_char_by_speaker: dict[str, str | None] = {
                                 "user": None,
                                 "unmute": None,
+                                "llm_tag_reasoning": None,
+                                "llm_tag_plan": None,
+                                "llm_tag_speech": None,
+                                "llm_tag_exec": None,
+                                "llm_raw_output": None,
                             }
+                            tag_printer: LLMTagPrinter | None = (
+                                LLMTagPrinter() if DEBUG_LLM_OUTPUT_TAGS else None
+                            )
+                            # Accumulate parsed tag blocks during streaming so they
+                            # can be printed all at once after the raw stream, rather
+                            # than interleaved with it.
+                            pending_tag_blocks: list[tuple[str, str]] = []
 
                             def _print_stream_chunk(speaker: str, label: str, text: str) -> None:
                                 nonlocal active_stream_speaker
@@ -353,9 +384,16 @@ async def run_bridge() -> None:
                                             active_stream_speaker = None
                                             last_char_by_speaker["unmute"] = None
                                             text_deltas.clear()
+                                            pending_tag_blocks.clear()
+                                            if tag_printer is not None:
+                                                tag_printer.flush()
                                         elif msg_type == "conversation.item.input_audio_transcription.completed":
                                             active_stream_speaker = None
                                             last_char_by_speaker["user"] = None
+                                        elif msg_type == "unmute.response.text.delta.ready":
+                                            pending_tag_blocks.clear()
+                                            if tag_printer is not None:
+                                                tag_printer.flush()
                                         continue
 
                                     if msg_type == "response.audio.delta":
@@ -393,7 +431,7 @@ async def run_bridge() -> None:
                                         text_delta = data.get("delta", "")
                                         if text_delta:
                                             text_deltas.append(text_delta)
-                                            if PRINT_TEXT_DELTAS:
+                                            if PRINT_TEXT_DELTAS and not DEBUG_LLM_OUTPUT_TAGS:
                                                 _print_stream_chunk(
                                                     "unmute", UNMUTE_LABEL, text_delta
                                                 )
@@ -402,13 +440,66 @@ async def run_bridge() -> None:
                                             "text": text_delta,
                                         }
                                         await laptop_ws.send(json.dumps(payload))
+                                    elif msg_type == "unmute.response.text.delta.ready":
+                                        raw_delta = data.get("delta", "")
+                                        if raw_delta:
+                                            if DEBUG_LLM_RAW_OUTPUT:
+                                                _print_stream_chunk(
+                                                    "llm_raw_output", RAW_LLM_LABEL, raw_delta
+                                                )
+                                                await laptop_ws.send(
+                                                    json.dumps(
+                                                        {
+                                                            "type": "robot.llm_raw_delta",
+                                                            "delta": raw_delta,
+                                                        }
+                                                    )
+                                                )
+                                            if tag_printer is not None:
+                                                pending_tag_blocks.extend(
+                                                    tag_printer.feed(raw_delta)
+                                                )
                                     elif msg_type == "response.text.done":
                                         # Streaming-only mode: no final full-sentence print.
-                                        if active_stream_speaker == "unmute":
+                                        if active_stream_speaker == "unmute" or (
+                                            active_stream_speaker is not None
+                                            and (
+                                                active_stream_speaker.startswith("llm_tag_")
+                                                or active_stream_speaker == "llm_raw_output"
+                                            )
+                                        ):
                                             print("", flush=True)
                                             active_stream_speaker = None
                                         last_char_by_speaker["unmute"] = None
+                                        last_char_by_speaker["llm_raw_output"] = None
+                                        for key in list(last_char_by_speaker):
+                                            if key.startswith("llm_tag_"):
+                                                last_char_by_speaker[key] = None
+                                        # Now that the raw stream is done, flush the
+                                        # accumulated parsed tag blocks in arrival order.
+                                        for tag_name, content in pending_tag_blocks:
+                                            label = TAG_LABELS.get(tag_name, UNMUTE_LABEL)
+                                            _print_stream_chunk(
+                                                f"llm_tag_{tag_name}", label, content
+                                            )
+                                            if DEBUG_LLM_OUTPUT_TAGS:
+                                                await laptop_ws.send(
+                                                    json.dumps(
+                                                        {
+                                                            "type": "robot.llm_tag_block",
+                                                            "tag_name": tag_name,
+                                                            "content": content,
+                                                        }
+                                                    )
+                                                )
+                                        if pending_tag_blocks and active_stream_speaker is not None:
+                                            print("", flush=True)
+                                            active_stream_speaker = None
+                                        pending_tag_blocks.clear()
                                         text_deltas.clear()
+                                        if tag_printer is not None:
+                                            tag_printer.flush()
+                                            tag_printer = LLMTagPrinter()
                                         await laptop_ws.send(
                                             json.dumps({"type": "robot.response_complete"})
                                         )
