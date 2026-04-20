@@ -284,6 +284,33 @@ async def run_bridge() -> None:
                                     )
                                     continue
 
+                                if msg_type == "browser.audio_opus":
+                                    # Browser mic: already Opus-encoded with AEC
+                                    # applied by the browser. Forward as-is to the
+                                    # remote Unmute backend via the standard
+                                    # input_audio_buffer.append event.
+                                    if paused_session:
+                                        continue
+                                    audio_b64 = data.get("audio", "")
+                                    if not audio_b64:
+                                        continue
+                                    try:
+                                        await unmute_ws.send(
+                                            json.dumps(
+                                                {
+                                                    "type": "input_audio_buffer.append",
+                                                    "audio": audio_b64,
+                                                }
+                                            )
+                                        )
+                                    except websockets.exceptions.ConnectionClosed as exc:
+                                        logger.info(
+                                            "Unmute websocket closed while forwarding browser audio; reconnecting: %s",
+                                            exc,
+                                        )
+                                        raise
+                                    continue
+
                                 if msg_type != "audio":
                                     continue
 

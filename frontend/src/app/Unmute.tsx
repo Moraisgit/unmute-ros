@@ -29,6 +29,12 @@ const Unmute = () => {
   const monitorAutoConnect = ["1", "true", "yes"].includes(
     (process.env.NEXT_PUBLIC_MONITOR_AUTO_CONNECT || "").toLowerCase(),
   );
+  // When true: browser captures mic (with getUserMedia AEC) and plays TTS.
+  // When false: ROS mic/speaker path is authoritative; browser is a pure
+  // text-only monitor (no mic capture, no audio playback).
+  const useBrowserMic = ["1", "true", "yes"].includes(
+    (process.env.NEXT_PUBLIC_USE_BROWSER_MIC || "1").toLowerCase(),
+  );
   const { isDevMode, showSubtitles } = useKeyboardShortcuts();
   const [debugDict, setDebugDict] = useState<object | null>(null);
   const [unmuteConfig, setUnmuteConfig] = useState<UnmuteConfig>(
@@ -132,8 +138,11 @@ const Unmute = () => {
   const onConnectButtonPress = async () => {
     // If we're not connected yet
     if (!shouldConnect) {
-      if (monitorAutoConnect) {
-        setManualDisconnect(false);
+      if (!useBrowserMic) {
+        // ROS mode: no mic capture, no browser audio playback. Just connect.
+        if (monitorAutoConnect) {
+          setManualDisconnect(false);
+        }
         setShouldConnect(true);
         return;
       }
@@ -142,6 +151,9 @@ const Unmute = () => {
       // If we have access to the microphone:
       if (mediaStream) {
         await setupAudio(mediaStream);
+        if (monitorAutoConnect) {
+          setManualDisconnect(false);
+        }
         setShouldConnect(true);
       }
     } else {
@@ -216,12 +228,30 @@ const Unmute = () => {
     if (manualDisconnect) return;
     if (shouldConnect) return;
 
-    if (healthStatus?.ok) {
-      setShouldConnect(true);
-      return;
-    }
-
     let cancelled = false;
+
+    const connectWithMic = async () => {
+      if (!useBrowserMic) {
+        // ROS mode: skip mic setup; browser is a pure text-only monitor.
+        setShouldConnect(true);
+        return;
+      }
+      // Browser mic capture needs permission; relies on the browser having
+      // persisted the grant for this origin. First-visit auto-connect may
+      // silently no-op until the user clicks Connect.
+      const mediaStream = await askMicrophoneAccess();
+      if (cancelled || !mediaStream) return;
+      await setupAudio(mediaStream);
+      if (cancelled) return;
+      setShouldConnect(true);
+    };
+
+    if (healthStatus?.ok) {
+      void connectWithMic();
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const pollHealth = async () => {
       try {
@@ -238,7 +268,7 @@ const Unmute = () => {
 
         const polledHealthStatus = (await response.json()) as HealthStatus;
         if (!cancelled && polledHealthStatus.ok) {
-          setShouldConnect(true);
+          void connectWithMic();
         }
       } catch {
         // Keep polling while monitor auto-connect is enabled.
@@ -256,10 +286,13 @@ const Unmute = () => {
     };
   }, [
     monitorAutoConnect,
+    useBrowserMic,
     backendServerUrl,
     healthStatus?.ok,
     manualDisconnect,
     shouldConnect,
+    askMicrophoneAccess,
+    setupAudio,
   ]);
 
   // After a manual pause disconnect, resume bridge forwarding and force a
