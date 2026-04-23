@@ -46,7 +46,6 @@ const Unmute = () => {
   const { microphoneAccess, askMicrophoneAccess } = useMicrophoneAccess();
 
   const [shouldConnect, setShouldConnect] = useState(false);
-  const [isRestarting, setIsRestarting] = useState(false);
   const [manualDisconnect, setManualDisconnect] = useState(false);
   const [pendingFreshSession, setPendingFreshSession] = useState(false);
   const backendServerUrl = useBackendServerUrl();
@@ -188,39 +187,13 @@ const Unmute = () => {
     }
   };
 
-  const onRestartConversationButtonPress = async () => {
-    if (isRestarting || readyState !== ReadyState.OPEN) return;
-
-    setIsRestarting(true);
-    setRawChatHistory([]);
-    setPendingFreshSession(true);
-    setManualDisconnect(false);
-
-    try {
-      sendMessage(
-        JSON.stringify({
-          type: "bridge.reset_session",
-          reason: "ui_restart_button",
-        }),
-      );
-
-      setShouldConnect(false);
-      await new Promise((resolve) => window.setTimeout(resolve, 400));
-      setShouldConnect(true);
-    } finally {
-      setIsRestarting(false);
-    }
-  };
-
   // If the websocket connection is closed, shut down the audio processing
   useEffect(() => {
     if (readyState === ReadyState.CLOSING || readyState === ReadyState.CLOSED) {
       setShouldConnect(false);
-      if (!isRestarting) {
-        shutdownAudio();
-      }
+      shutdownAudio();
     }
-  }, [isRestarting, readyState, shutdownAudio]);
+  }, [readyState, shutdownAudio]);
 
   // Monitor mode: connect automatically once backend health is available.
   useEffect(() => {
@@ -516,28 +489,9 @@ const Unmute = () => {
               {"download recording"}
             </SlantedButton>
           )}
-          {monitorAutoConnect && (
-            <SlantedButton
-              onClick={onRestartConversationButtonPress}
-              kind={
-                !isRestarting && readyState === ReadyState.OPEN
-                  ? "secondary"
-                  : "disabled"
-              }
-              extraClasses="w-full max-w-96"
-            >
-              {isRestarting ? "restarting..." : "restart conversation"}
-            </SlantedButton>
-          )}
           <SlantedButton
             onClick={onConnectButtonPress}
-            kind={
-              isRestarting
-                ? "disabled"
-                : shouldConnect
-                  ? "secondary"
-                  : "primary"
-            }
+            kind={shouldConnect ? "secondary" : "primary"}
             extraClasses="w-full max-w-96"
           >
             {shouldConnect ? "disconnect" : "connect"}
