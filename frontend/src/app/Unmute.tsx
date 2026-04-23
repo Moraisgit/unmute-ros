@@ -229,21 +229,32 @@ const Unmute = () => {
     if (shouldConnect) return;
 
     let cancelled = false;
+    let connecting = false;
 
     const connectWithMic = async () => {
-      if (!useBrowserMic) {
-        // ROS mode: skip mic setup; browser is a pure text-only monitor.
+      if (cancelled || connecting) return;
+      connecting = true;
+
+      try {
+        if (!useBrowserMic) {
+          // ROS mode: skip mic setup; browser is a pure text-only monitor.
+          setShouldConnect(true);
+          return;
+        }
+        // Browser mic capture needs permission; relies on the browser having
+        // persisted the grant for this origin. First-visit auto-connect may
+        // silently no-op until the user clicks Connect.
+        const mediaStream = await askMicrophoneAccess();
+        if (cancelled || !mediaStream) return;
+        await setupAudio(mediaStream);
+        if (cancelled) return;
         setShouldConnect(true);
-        return;
+      } catch (error) {
+        cancelled = true;
+        console.error("Monitor auto-connect failed", error);
+      } finally {
+        connecting = false;
       }
-      // Browser mic capture needs permission; relies on the browser having
-      // persisted the grant for this origin. First-visit auto-connect may
-      // silently no-op until the user clicks Connect.
-      const mediaStream = await askMicrophoneAccess();
-      if (cancelled || !mediaStream) return;
-      await setupAudio(mediaStream);
-      if (cancelled) return;
-      setShouldConnect(true);
     };
 
     if (healthStatus?.ok) {
