@@ -76,7 +76,7 @@ REASONING_LABEL = _make_label("Unmute - Reasoning", "\033[95m")
 PLAN_LABEL = _make_label("Unmute - Plan", "\033[93m")
 SPEECH_TAG_LABEL = _make_label("Unmute - Speech", "\033[96m")
 EXEC_LABEL = _make_label("Unmute - Exec", "\033[94m")
-ACTION_RESULT_LABEL = _make_label("Unmute - Action Result", "\033[92m")
+ACTION_RESULT_LABEL = _make_label("Action Feedback", "\033[92m")
 RAW_LLM_LABEL = _make_label("Unmute - Raw LLM", "\033[36m")
 TAG_LABELS: dict[str, str] = {
     "reasoning": REASONING_LABEL,
@@ -85,6 +85,17 @@ TAG_LABELS: dict[str, str] = {
     "exec": EXEC_LABEL,
     "action_result": ACTION_RESULT_LABEL,
 }
+
+
+def _format_action_result_for_print(content: str) -> str:
+    trimmed = content.strip()
+    if trimmed.startswith("<action_result>") and trimmed.endswith("</action_result>"):
+        trimmed = trimmed[len("<action_result>") : -len("</action_result>")].strip()
+    try:
+        payload = json.loads(trimmed)
+    except json.JSONDecodeError:
+        return trimmed
+    return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 def _to_float32_pcm(raw_audio_b64: str, pcm_format: str) -> np.ndarray:
@@ -272,7 +283,8 @@ async def run_bridge() -> None:
                             )
 
                         async def _send_action_result(content: str) -> None:
-                            logger.info("Injecting action_result into LLM: %s", content)
+                            formatted = _format_action_result_for_print(content)
+                            print(f"{ACTION_RESULT_LABEL} {formatted}", flush=True)
                             await _send_to_unmute(
                                 {
                                     "type": "unmute.user_message",
