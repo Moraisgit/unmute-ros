@@ -13,6 +13,22 @@ const normalizeStreamingText = (content: string): string => {
   return content.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
 };
 
+const extractActionResultJson = (content: string): string | null => {
+  const match = content.match(/<action_result>([\s\S]*)<\/action_result>/);
+  if (!match) return null;
+  return match[1].trim();
+};
+
+const formatActionResult = (content: string): string => {
+  const payload = extractActionResultJson(content) ?? content.trim();
+  try {
+    const parsed = JSON.parse(payload);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return payload;
+  }
+};
+
 type RoleConfig = {
   label: string;
   containerClass: string;
@@ -68,6 +84,13 @@ const ROLE_CONFIG: Partial<Record<ChatRole, RoleConfig>> = {
     label: "Unmute - Exec",
     containerClass: "border-pink/60 bg-pink/10",
     labelClass: "text-pink",
+    textClass: "font-mono text-xs md:text-sm",
+    preserveWhitespace: true,
+  },
+  llm_action_result: {
+    label: "Action Feedback",
+    containerClass: "border-green/60 bg-green/10",
+    labelClass: "text-green",
     textClass: "font-mono text-xs md:text-sm",
     preserveWhitespace: true,
   },
@@ -153,9 +176,12 @@ const ConversationLog = ({ chatHistory }: ConversationLogProps) => {
         {visibleMessages.map((message, idx) => {
           const config =
             ROLE_CONFIG[message.role as ChatRole] ?? ROLE_CONFIG.assistant!;
-          const renderedText = config.preserveWhitespace
-            ? message.content
-            : normalizeStreamingText(message.content);
+          const renderedText =
+            message.role === "llm_action_result"
+              ? formatActionResult(message.content)
+              : config.preserveWhitespace
+                ? message.content
+                : normalizeStreamingText(message.content);
 
           return (
             <article
