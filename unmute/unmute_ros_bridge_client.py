@@ -272,11 +272,21 @@ async def run_bridge() -> None:
                             )
 
                         async def _send_action_result(content: str) -> None:
+                            logger.info("Injecting action_result into LLM: %s", content)
                             await _send_to_unmute(
                                 {
                                     "type": "unmute.user_message",
                                     "content": content,
                                 }
+                            )
+                            await laptop_ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "robot.llm_tag_block",
+                                        "tag_name": "action_result",
+                                        "content": content,
+                                    }
+                                )
                             )
 
                         async def _flush_action_results() -> None:

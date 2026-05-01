@@ -366,6 +366,7 @@ const Unmute = () => {
         plan: "llm_plan",
         speech: "llm_speech",
         exec: "llm_exec",
+        action_result: "llm_action_result",
       };
       const role = roleMap[tagName];
       if (role && content.length > 0) {
