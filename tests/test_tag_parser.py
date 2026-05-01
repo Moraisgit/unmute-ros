@@ -116,6 +116,11 @@ def test_llm_tag_printer_all_four_tag_types():
     ]
 
 
+def test_llm_tag_printer_action_result_tag():
+    src = "<action_result>{\"status\":\"SUCCEEDED\"}</action_result>"
+    assert feed_all(src) == [("action_result", "{\"status\":\"SUCCEEDED\"}")]
+
+
 def test_llm_tag_printer_split_across_feeds_open():
     assert feed_all("<reas|oning>|abc|</reasoning>") == [("reasoning", "abc")]
 
