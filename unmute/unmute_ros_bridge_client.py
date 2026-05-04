@@ -270,10 +270,15 @@ async def run_bridge() -> None:
                             maxsize=ACTION_RESULT_QUEUE_MAXSIZE
                         )
                         send_lock = asyncio.Lock()
+                        laptop_send_lock = asyncio.Lock()
 
                         async def _send_to_unmute(payload: dict) -> None:
                             async with send_lock:
                                 await unmute_ws.send(json.dumps(payload))
+
+                        async def _send_to_laptop(payload: dict) -> None:
+                            async with laptop_send_lock:
+                                await laptop_ws.send(json.dumps(payload))
 
                         def _can_inject_action_result() -> bool:
                             return (
@@ -291,23 +296,22 @@ async def run_bridge() -> None:
                                     "content": content,
                                 }
                             )
-                            await laptop_ws.send(
-                                json.dumps(
-                                    {
-                                        "type": "robot.llm_tag_block",
-                                        "tag_name": "action_result",
-                                        "content": content,
-                                    }
-                                )
+                            await _send_to_laptop(
+                                {
+                                    "type": "robot.llm_tag_block",
+                                    "tag_name": "action_result",
+                                    "content": content,
+                                }
                             )
 
                         async def _flush_action_results() -> None:
-                            while _can_inject_action_result():
-                                try:
-                                    content = action_result_queue.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    break
-                                await _send_action_result(content)
+                            if not _can_inject_action_result():
+                                return
+                            try:
+                                content = action_result_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                return
+                            await _send_action_result(content)
 
                         def _queue_action_result(content: str) -> None:
                             try:
@@ -326,6 +330,9 @@ async def run_bridge() -> None:
 
                         async def forward_audio_to_unmute() -> None:
                             nonlocal paused_session
+                            nonlocal assistant_speaking
+                            nonlocal assistant_audio_seen
+                            nonlocal user_speaking
                             packet_count = 0
                             async for message in laptop_ws:
                                 try:
@@ -386,13 +393,11 @@ async def run_bridge() -> None:
                                     if not audio_b64:
                                         continue
                                     try:
-                                        await unmute_ws.send(
-                                            json.dumps(
-                                                {
-                                                    "type": "input_audio_buffer.append",
-                                                    "audio": audio_b64,
-                                                }
-                                            )
+                                        await _send_to_unmute(
+                                            {
+                                                "type": "input_audio_buffer.append",
+                                                "audio": audio_b64,
+                                            }
                                         )
                                     except websockets.exceptions.ConnectionClosed as exc:
                                         logger.info(
@@ -447,7 +452,7 @@ async def run_bridge() -> None:
                                         "audio": outgoing_audio_b64,
                                         "format": outgoing_format,
                                     }
-                                    await unmute_ws.send(json.dumps(unmute_msg))
+                                    await _send_to_unmute(unmute_msg)
                                 except websockets.exceptions.ConnectionClosed as exc:
                                     logger.info(
                                         "Unmute websocket closed while forwarding audio; reconnecting: %s",

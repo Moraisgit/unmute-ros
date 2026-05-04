@@ -13,20 +13,29 @@ const normalizeStreamingText = (content: string): string => {
   return content.replace(/\s*\n+\s*/g, " ").replace(/\s{2,}/g, " ").trim();
 };
 
-const extractActionResultJson = (content: string): string | null => {
-  const match = content.match(/<action_result>([\s\S]*)<\/action_result>/);
-  if (!match) return null;
-  return match[1].trim();
+const extractActionResultPayloads = (content: string): string[] => {
+  const payloads: string[] = [];
+  const matches = content.matchAll(/<action_result>([\s\S]*?)<\/action_result>/g);
+  for (const match of matches) {
+    const payload = match[1]?.trim();
+    if (payload) payloads.push(payload);
+  }
+  return payloads;
 };
 
 const formatActionResult = (content: string): string => {
-  const payload = extractActionResultJson(content) ?? content.trim();
-  try {
-    const parsed = JSON.parse(payload);
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return payload;
-  }
+  const payloads = extractActionResultPayloads(content);
+  const blocks = payloads.length > 0 ? payloads : [content.trim()];
+  return blocks
+    .map((payload) => {
+      try {
+        const parsed = JSON.parse(payload);
+        return JSON.stringify(parsed, null, 2);
+      } catch {
+        return payload;
+      }
+    })
+    .join("\n\n");
 };
 
 type RoleConfig = {
