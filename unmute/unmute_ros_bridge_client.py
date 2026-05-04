@@ -501,6 +501,19 @@ async def run_bridge() -> None:
                                 print(text, end="", flush=True)
                                 last_char_by_speaker[speaker] = text[-1]
 
+                            def _reset_tag_state(reason: str) -> None:
+                                nonlocal active_stream_speaker
+                                if reason and DEBUG_STT_EVENTS:
+                                    logger.debug("Resetting tag parser (%s)", reason)
+                                active_stream_speaker = None
+                                pending_tag_blocks.clear()
+                                text_deltas.clear()
+                                if tag_printer is not None:
+                                    tag_printer.flush()
+                                for key in list(last_char_by_speaker):
+                                    if key.startswith("llm_tag_") or key == "llm_raw_output":
+                                        last_char_by_speaker[key] = None
+
                             async for message in unmute_ws:
                                 try:
                                     data = json.loads(message)
@@ -533,6 +546,7 @@ async def run_bridge() -> None:
                                         await laptop_ws.send(json.dumps(payload))
                                     elif msg_type == "input_audio_buffer.speech_started":
                                         user_speaking = True
+                                        _reset_tag_state("speech_started")
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_started")
                                         await laptop_ws.send(
@@ -551,6 +565,7 @@ async def run_bridge() -> None:
                                         if PRINT_USER_TRANSCRIPT_DELTAS and delta:
                                             _print_stream_chunk("user", USER_LABEL, delta)
                                         if delta:
+                                            _reset_tag_state("user_transcript_delta")
                                             await laptop_ws.send(
                                                 json.dumps(
                                                     {
@@ -559,6 +574,8 @@ async def run_bridge() -> None:
                                                     }
                                                 )
                                             )
+                                    elif msg_type == "unmute.interrupted_by_vad":
+                                        _reset_tag_state("interrupted_by_vad")
                                     elif msg_type == "response.text.delta":
                                         assistant_speaking = True
                                         text_delta = data.get("delta", "")
