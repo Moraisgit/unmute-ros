@@ -6,7 +6,8 @@ export type ChatRole =
   | "llm_reasoning"
   | "llm_plan"
   | "llm_speech"
-  | "llm_exec";
+  | "llm_exec"
+  | "llm_action_result";
 
 export type ChatMessage = {
   role: ChatRole;

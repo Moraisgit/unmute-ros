@@ -39,6 +39,9 @@ DEBUG_LLM_OUTPUT_TAGS = (
 DEBUG_LLM_RAW_OUTPUT = (
     os.environ.get("DEBUG_LLM_RAW_OUTPUT", "false").lower() == "true"
 )
+ACTION_RESULT_QUEUE_MAXSIZE = int(
+    os.environ.get("ACTION_RESULT_QUEUE_MAXSIZE", "64")
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,13 +76,26 @@ REASONING_LABEL = _make_label("Unmute - Reasoning", "\033[95m")
 PLAN_LABEL = _make_label("Unmute - Plan", "\033[93m")
 SPEECH_TAG_LABEL = _make_label("Unmute - Speech", "\033[96m")
 EXEC_LABEL = _make_label("Unmute - Exec", "\033[94m")
+ACTION_RESULT_LABEL = _make_label("Action Feedback", "\033[92m")
 RAW_LLM_LABEL = _make_label("Unmute - Raw LLM", "\033[36m")
 TAG_LABELS: dict[str, str] = {
     "reasoning": REASONING_LABEL,
     "plan": PLAN_LABEL,
     "speech": SPEECH_TAG_LABEL,
     "exec": EXEC_LABEL,
+    "action_result": ACTION_RESULT_LABEL,
 }
+
+
+def _format_action_result_for_print(content: str) -> str:
+    trimmed = content.strip()
+    if trimmed.startswith("<action_result>") and trimmed.endswith("</action_result>"):
+        trimmed = trimmed[len("<action_result>") : -len("</action_result>")].strip()
+    try:
+        payload = json.loads(trimmed)
+    except json.JSONDecodeError:
+        return trimmed
+    return json.dumps(payload, indent=2, ensure_ascii=True)
 
 
 def _to_float32_pcm(raw_audio_b64: str, pcm_format: str) -> np.ndarray:
@@ -247,8 +263,76 @@ async def run_bridge() -> None:
                             UNMUTE_SAMPLE_RATE,
                         )
 
+                        assistant_speaking = False
+                        assistant_audio_seen = False
+                        user_speaking = False
+                        action_result_queue: asyncio.Queue[str] = asyncio.Queue(
+                            maxsize=ACTION_RESULT_QUEUE_MAXSIZE
+                        )
+                        send_lock = asyncio.Lock()
+                        laptop_send_lock = asyncio.Lock()
+
+                        async def _send_to_unmute(payload: dict) -> None:
+                            async with send_lock:
+                                await unmute_ws.send(json.dumps(payload))
+
+                        async def _send_to_laptop(payload: dict) -> None:
+                            async with laptop_send_lock:
+                                await laptop_ws.send(json.dumps(payload))
+
+                        def _can_inject_action_result() -> bool:
+                            return (
+                                not paused_session
+                                and not assistant_speaking
+                                and not user_speaking
+                            )
+
+                        async def _send_action_result(content: str) -> None:
+                            formatted = _format_action_result_for_print(content)
+                            print(f"{ACTION_RESULT_LABEL} {formatted}", flush=True)
+                            await _send_to_unmute(
+                                {
+                                    "type": "unmute.user_message",
+                                    "content": content,
+                                }
+                            )
+                            await _send_to_laptop(
+                                {
+                                    "type": "robot.llm_tag_block",
+                                    "tag_name": "action_result",
+                                    "content": content,
+                                }
+                            )
+
+                        async def _flush_action_results() -> None:
+                            if not _can_inject_action_result():
+                                return
+                            try:
+                                content = action_result_queue.get_nowait()
+                            except asyncio.QueueEmpty:
+                                return
+                            await _send_action_result(content)
+
+                        def _queue_action_result(content: str) -> None:
+                            try:
+                                action_result_queue.put_nowait(content)
+                            except asyncio.QueueFull:
+                                try:
+                                    _ = action_result_queue.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                                try:
+                                    action_result_queue.put_nowait(content)
+                                except asyncio.QueueFull:
+                                    logger.warning(
+                                        "Dropping action_result because queue is full."
+                                    )
+
                         async def forward_audio_to_unmute() -> None:
                             nonlocal paused_session
+                            nonlocal assistant_speaking
+                            nonlocal assistant_audio_seen
+                            nonlocal user_speaking
                             packet_count = 0
                             async for message in laptop_ws:
                                 try:
@@ -266,6 +350,9 @@ async def run_bridge() -> None:
                                     source = data.get("source", "unknown")
                                     reason = data.get("reason", "unspecified")
                                     paused_session = True
+                                    assistant_speaking = False
+                                    assistant_audio_seen = False
+                                    user_speaking = False
                                     logger.info(
                                         "Session paused by %s (%s). Suppressing bridge output until resume.",
                                         source,
@@ -282,6 +369,17 @@ async def run_bridge() -> None:
                                         source,
                                         reason,
                                     )
+                                    await _flush_action_results()
+                                    continue
+
+                                if msg_type == "bridge.action_result":
+                                    content = data.get("content", "")
+                                    if not content:
+                                        continue
+                                    if _can_inject_action_result():
+                                        await _send_action_result(content)
+                                    else:
+                                        _queue_action_result(content)
                                     continue
 
                                 if msg_type == "browser.audio_opus":
@@ -295,13 +393,11 @@ async def run_bridge() -> None:
                                     if not audio_b64:
                                         continue
                                     try:
-                                        await unmute_ws.send(
-                                            json.dumps(
-                                                {
-                                                    "type": "input_audio_buffer.append",
-                                                    "audio": audio_b64,
-                                                }
-                                            )
+                                        await _send_to_unmute(
+                                            {
+                                                "type": "input_audio_buffer.append",
+                                                "audio": audio_b64,
+                                            }
                                         )
                                     except websockets.exceptions.ConnectionClosed as exc:
                                         logger.info(
@@ -356,7 +452,7 @@ async def run_bridge() -> None:
                                         "audio": outgoing_audio_b64,
                                         "format": outgoing_format,
                                     }
-                                    await unmute_ws.send(json.dumps(unmute_msg))
+                                    await _send_to_unmute(unmute_msg)
                                 except websockets.exceptions.ConnectionClosed as exc:
                                     logger.info(
                                         "Unmute websocket closed while forwarding audio; reconnecting: %s",
@@ -368,6 +464,9 @@ async def run_bridge() -> None:
 
                         async def forward_response_to_laptop() -> None:
                             nonlocal paused_session
+                            nonlocal assistant_speaking
+                            nonlocal assistant_audio_seen
+                            nonlocal user_speaking
                             text_deltas: list[str] = []
                             active_stream_speaker: str | None = None
                             last_char_by_speaker: dict[str, str | None] = {
@@ -377,6 +476,7 @@ async def run_bridge() -> None:
                                 "llm_tag_plan": None,
                                 "llm_tag_speech": None,
                                 "llm_tag_exec": None,
+                                "llm_tag_action_result": None,
                                 "llm_raw_output": None,
                             }
                             tag_printer: LLMTagPrinter | None = (
@@ -401,6 +501,19 @@ async def run_bridge() -> None:
                                 print(text, end="", flush=True)
                                 last_char_by_speaker[speaker] = text[-1]
 
+                            def _reset_tag_state(reason: str) -> None:
+                                nonlocal active_stream_speaker
+                                if reason and DEBUG_STT_EVENTS:
+                                    logger.debug("Resetting tag parser (%s)", reason)
+                                active_stream_speaker = None
+                                pending_tag_blocks.clear()
+                                text_deltas.clear()
+                                if tag_printer is not None:
+                                    tag_printer.flush()
+                                for key in list(last_char_by_speaker):
+                                    if key.startswith("llm_tag_") or key == "llm_raw_output":
+                                        last_char_by_speaker[key] = None
+
                             async for message in unmute_ws:
                                 try:
                                     data = json.loads(message)
@@ -424,28 +537,35 @@ async def run_bridge() -> None:
                                         continue
 
                                     if msg_type == "response.audio.delta":
+                                        assistant_speaking = True
+                                        assistant_audio_seen = True
                                         payload = {
                                             "type": "robot.voice_audio",
                                             "audio": data["delta"],
                                         }
                                         await laptop_ws.send(json.dumps(payload))
                                     elif msg_type == "input_audio_buffer.speech_started":
+                                        user_speaking = True
+                                        _reset_tag_state("speech_started")
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_started")
                                         await laptop_ws.send(
                                             json.dumps({"type": "robot.speech_started"})
                                         )
                                     elif msg_type == "input_audio_buffer.speech_stopped":
+                                        user_speaking = False
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_stopped")
                                         await laptop_ws.send(
                                             json.dumps({"type": "robot.speech_stopped"})
                                         )
+                                        await _flush_action_results()
                                     elif msg_type == "conversation.item.input_audio_transcription.delta":
                                         delta = data.get("delta", "")
                                         if PRINT_USER_TRANSCRIPT_DELTAS and delta:
                                             _print_stream_chunk("user", USER_LABEL, delta)
                                         if delta:
+                                            _reset_tag_state("user_transcript_delta")
                                             await laptop_ws.send(
                                                 json.dumps(
                                                     {
@@ -454,7 +574,10 @@ async def run_bridge() -> None:
                                                     }
                                                 )
                                             )
+                                    elif msg_type == "unmute.interrupted_by_vad":
+                                        _reset_tag_state("interrupted_by_vad")
                                     elif msg_type == "response.text.delta":
+                                        assistant_speaking = True
                                         text_delta = data.get("delta", "")
                                         if text_delta:
                                             text_deltas.append(text_delta)
@@ -467,6 +590,10 @@ async def run_bridge() -> None:
                                             "text": text_delta,
                                         }
                                         await laptop_ws.send(json.dumps(payload))
+                                    elif msg_type == "response.audio.done":
+                                        assistant_speaking = False
+                                        assistant_audio_seen = False
+                                        await _flush_action_results()
                                     elif msg_type == "unmute.response.text.delta.ready":
                                         raw_delta = data.get("delta", "")
                                         if raw_delta:
@@ -487,6 +614,9 @@ async def run_bridge() -> None:
                                                     tag_printer.feed(raw_delta)
                                                 )
                                     elif msg_type == "response.text.done":
+                                        if not assistant_audio_seen:
+                                            assistant_speaking = False
+                                        assistant_audio_seen = False
                                         # Streaming-only mode: no final full-sentence print.
                                         if active_stream_speaker == "unmute" or (
                                             active_stream_speaker is not None
@@ -530,6 +660,7 @@ async def run_bridge() -> None:
                                         await laptop_ws.send(
                                             json.dumps({"type": "robot.response_complete"})
                                         )
+                                        await _flush_action_results()
                                     elif msg_type == "conversation.item.input_audio_transcription.completed":
                                         if PRINT_USER_TRANSCRIPT_DELTAS and active_stream_speaker == "user":
                                             print("", flush=True)

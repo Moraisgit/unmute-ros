@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
-_OPEN_TAGS = ("<speech>", "<reasoning>", "<plan>", "<exec>")
-_CLOSE_TAGS = ("</speech>", "</reasoning>", "</plan>", "</exec>")
+_OPEN_TAGS = ("<speech>", "<reasoning>", "<plan>", "<exec>", "<action_result>")
+_CLOSE_TAGS = ("</speech>", "</reasoning>", "</plan>", "</exec>", "</action_result>")
 _MAX_TAG_LEN = max(len(t) for t in _OPEN_TAGS + _CLOSE_TAGS)
 
 

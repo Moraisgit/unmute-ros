@@ -18,6 +18,9 @@ def preprocess_messages_for_llm(
 ) -> list[dict[str, str]]:
     output = []
 
+    def _is_action_result_message(content: str) -> bool:
+        return content.lstrip().startswith("<action_result>")
+
     for message in chat_history:
         message = deepcopy(message)
 
@@ -31,7 +34,12 @@ def preprocess_messages_for_llm(
         # into the context, otherwise the LLM might want to repeat it.
         message["content"] = message["content"].strip().removesuffix(INTERRUPTION_CHAR)
 
-        if output and message["role"] == output[-1]["role"]:
+        if (
+            output
+            and message["role"] == output[-1]["role"]
+            and not _is_action_result_message(message["content"])
+            and not _is_action_result_message(output[-1]["content"])
+        ):
             output[-1]["content"] += " " + message["content"]
         else:
             output.append(message)
