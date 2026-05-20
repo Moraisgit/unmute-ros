@@ -1,6 +1,8 @@
 import datetime
 import json
+import os
 import random
+from dataclasses import dataclass
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
@@ -76,106 +78,193 @@ If they don't answer three times, say some sort of goodbye message and end your 
 with "Bye!"
 """
 
-_ROBOT_PLANNER_ACTIONS = """
-def move(destination: str) -> bool:
-    '''
-    Moves the robot to a specified location.
-    Args:
-        destination (str): The semantic name of the destination.
-    Returns:
-        bool: Indicates whether the move action was successful.
-    '''
+@dataclass(frozen=True)
+class ActionArg:
+    name: str
+    py_type: str  # only "str" supported today
+    description: str
 
-def find_object(object: str, location: str) -> str:
-    '''
-    Find an object in the scene.
-    Args:
-        object (str): The description of the object to find.
-        location (str): The location where the object should be found.
-    Returns:
-        str: The unique ID of the found object, which can be used in subsequent commands.
-    '''
 
-def find_objects(object: str, location: str) -> list[str]:
-    '''
-    Find all objects of a certain type in the scene.
-    Args:
-        object (str): The descriptions of the objects to find.
-        location (str): The location where the objects should be found.
-    Returns:
-        list[str]: A list of unique IDs of the found objects, which can be used in subsequent commands.
-    '''
+@dataclass(frozen=True)
+class ActionDef:
+    name: str
+    args: tuple[ActionArg, ...]
+    returns: str  # "bool" | "str" | "list[str]"
+    summary: str  # first sentence of the docstring
+    returns_desc: str  # description of the return value
 
-def pick(object: str) -> bool:
-    '''
-    Picks up an object identified by its unique ID. The object must have been found using find_object.
-    Args:
-        object (str): The ID of the object to pick up.
-    Returns:
-        bool: Indicates whether the pick action was successful.
-    '''
 
-def place(destination: str) -> bool:
-    '''
-    Places the currently held object on a specified surface. The robot must already be holding an object.
-    Args:
-        destination (str): Semantic name of the surface where to place the object.
-    Returns:
-        bool: Indicates whether the place action was successful.
-    '''
+def _returns_value(a: ActionDef) -> bool:
+    """Whether this action produces a value that can be bound via output_variable."""
+    return a.returns != "bool"
 
-def find_person(location: str, person: str, person_info: str) -> str:
-    '''
-    Finds a person based on identifying features in a given location.
-    Args:
-        location (str): The location where to look for the person.
-        person (str): The main identifier of the person (name, gender, age, or "person").
-        person_info (str): Additional description of the person (pose, clothes, etc.).
-    Returns:
-        str: The unique ID of the found person, which can be used in subsequent commands.
-    '''
 
-def find_people(location: str, person: str, person_info: str) -> list[str]:
-    '''
-    Finds all people matching the given description.
-    Args:
-        location (str): The location where to look for the people.
-        person (str): The main identifier of the people (name, gender, age, or "people").
-        person_info (str): Additional description of the people (pose, clothes, etc.).
-    Returns:
-        list[str]: A list of unique IDs of the found people, which can be used in subsequent commands.
-    '''
+ACTIONS: tuple[ActionDef, ...] = (
+    ActionDef(
+        name="move",
+        args=(ActionArg("destination", "str", "The semantic name of the destination."),),
+        returns="bool",
+        summary="Moves the robot to a specified location.",
+        returns_desc="Indicates whether the move action was successful.",
+    ),
+    ActionDef(
+        name="find_object",
+        args=(
+            ActionArg("object", "str", "The description of the object to find."),
+            ActionArg("location", "str", "The location where the object should be found."),
+        ),
+        returns="str",
+        summary="Find an object in the scene.",
+        returns_desc="The unique ID of the found object, which can be used in subsequent commands.",
+    ),
+    ActionDef(
+        name="find_objects",
+        args=(
+            ActionArg("object", "str", "The descriptions of the objects to find."),
+            ActionArg("location", "str", "The location where the objects should be found."),
+        ),
+        returns="list[str]",
+        summary="Find all objects of a certain type in the scene.",
+        returns_desc="A list of unique IDs of the found objects, which can be used in subsequent commands.",
+    ),
+    ActionDef(
+        name="pick",
+        args=(ActionArg("object", "str", "The ID of the object to pick up."),),
+        returns="bool",
+        summary="Picks up an object identified by its unique ID. The object must have been found using find_object.",
+        returns_desc="Indicates whether the pick action was successful.",
+    ),
+    ActionDef(
+        name="place",
+        args=(ActionArg("destination", "str", "Semantic name of the surface where to place the object."),),
+        returns="bool",
+        summary="Places the currently held object on a specified surface. The robot must already be holding an object.",
+        returns_desc="Indicates whether the place action was successful.",
+    ),
+    ActionDef(
+        name="find_person",
+        args=(
+            ActionArg("location", "str", "The location where to look for the person."),
+            ActionArg("person", "str", "The main identifier of the person (name, gender, age, or \"person\")."),
+            ActionArg("person_info", "str", "Additional description of the person (pose, clothes, etc.)."),
+        ),
+        returns="str",
+        summary="Finds a person based on identifying features in a given location.",
+        returns_desc="The unique ID of the found person, which can be used in subsequent commands.",
+    ),
+    ActionDef(
+        name="find_people",
+        args=(
+            ActionArg("location", "str", "The location where to look for the people."),
+            ActionArg("person", "str", "The main identifier of the people (name, gender, age, or \"people\")."),
+            ActionArg("person_info", "str", "Additional description of the people (pose, clothes, etc.)."),
+        ),
+        returns="list[str]",
+        summary="Finds all people matching the given description.",
+        returns_desc="A list of unique IDs of the found people, which can be used in subsequent commands.",
+    ),
+    ActionDef(
+        name="guide",
+        args=(
+            ActionArg("person_id", "str", "The ID of the person (must have been found using find_person earlier)."),
+            ActionArg("destination", "str", "The semantic name of the destination."),
+        ),
+        returns="bool",
+        summary="Guides a person identified by their ID to a specified location. The person must have been found using find_person.",
+        returns_desc="Indicates whether the guide action was successful.",
+    ),
+    ActionDef(
+        name="follow",
+        args=(
+            ActionArg("person_id", "str", "The ID of the person to follow."),
+            ActionArg("destination", "str", "The semantic name of the destination. If empty, the robot will only stop when told."),
+        ),
+        returns="bool",
+        summary="Follows a person identified by their ID. The person must have been found using find_person.",
+        returns_desc="Indicates whether the follow action was successful.",
+    ),
+    ActionDef(
+        name="deliver",
+        args=(
+            ActionArg("object", "str", "The ID of the object to be delivered."),
+            ActionArg("person", "str", "The ID of the person to whom the object will be delivered."),
+        ),
+        returns="bool",
+        summary="Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.",
+        returns_desc="Indicates whether the deliver action was successful.",
+    ),
+)
 
-def guide(person_id: str, destination: str) -> bool:
-    '''
-    Guides a person identified by their ID to a specified location. The person must have been found using find_person.
-    Args:
-        person_id (str): The ID of the person (must have been found using find_person earlier).
-        destination (str): The semantic name of the destination.
-    Returns:
-        bool: Indicates whether the guide action was successful.
-    '''
 
-def follow(person_id: str, destination: str) -> bool:
-    '''
-    Follows a person identified by their ID. The person must have been found using find_person.
-    Args:
-        person_id (str): The ID of the person to follow.
-        destination (str): The semantic name of the destination. If empty, the robot will only stop when told.
-    Returns:
-        bool: Indicates whether the follow action was successful.
-    '''
+def _render_action_signatures(actions: tuple[ActionDef, ...]) -> str:
+    """Render the action registry as Python function signatures.
 
-def deliver(object: str, person: str) -> bool:
-    '''
-    Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.
-    Args:
-        object (str): The ID of the object to be delivered.
-        person (str): The ID of the person to whom the object will be delivered.
-    Returns:
-        bool: Indicates whether the deliver action was successful.
-    '''
-"""
+    Output is byte-equal to the prior hand-written _ROBOT_PLANNER_ACTIONS string,
+    so the LLM sees the same prompt text after the refactor.
+    """
+    lines = [""]
+    for a in actions:
+        sig = ", ".join(f"{arg.name}: {arg.py_type}" for arg in a.args)
+        lines.append(f"def {a.name}({sig}) -> {a.returns}:")
+        lines.append("    '''")
+        lines.append(f"    {a.summary}")
+        lines.append("    Args:")
+        for arg in a.args:
+            lines.append(f"        {arg.name} ({arg.py_type}): {arg.description}")
+        lines.append("    Returns:")
+        lines.append(f"        {a.returns}: {a.returns_desc}")
+        lines.append("    '''")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
+    """Generate a GBNF grammar enforcing the domestic robot output format.
+
+    Top-level shape: reasoning [plan] speech [exec], with the constraint that
+    plan present implies exec present. Each action is a strict per-name rule
+    derived from ACTIONS; output_variable is only allowed on actions whose
+    return type is not bool.
+    """
+    action_rule_names = [f"act-{a.name.replace('_', '-')}" for a in actions]
+    action_alt = " | ".join(action_rule_names)
+
+    lines: list[str] = []
+    lines.append(
+        "root ::= reasoning speech | reasoning speech exec"
+        " | reasoning plan speech exec"
+    )
+    lines.append("")
+    lines.append('reasoning ::= "<reasoning>" inner-text "</reasoning>"')
+    lines.append('speech    ::= "<speech>" inner-text "</speech>"')
+    lines.append(
+        'plan      ::= "<plan>" ws "[" ws action ("," ws action)* ws "]" ws "</plan>"'
+    )
+    lines.append('exec      ::= "<exec>" ws action ws "</exec>"')
+    lines.append("")
+    lines.append(f"action ::= {action_alt}")
+    lines.append("")
+
+    for a, rule_name in zip(actions, action_rule_names, strict=True):
+        parts: list[str] = []
+        parts.append('"{" ws')
+        parts.append('"\\"name\\"" ws ":" ws ' + f'"\\"{a.name}\\""')
+        for arg in a.args:
+            parts.append('"," ws')
+            parts.append(f'"\\"{arg.name}\\"" ws ":" ws string')
+        if _returns_value(a):
+            parts.append('("," ws "\\"output_variable\\"" ws ":" ws string)?')
+        parts.append('ws "}"')
+        lines.append(f"{rule_name} ::= " + " ".join(parts))
+
+    lines.append("")
+    lines.append('inner-text ::= [^<]+')
+    lines.append('string     ::= "\\"" ([^"\\\\] | "\\\\" .)* "\\""')
+    lines.append('ws         ::= [ \\t\\n]*')
+    return "\n".join(lines) + "\n"
+
+
+_ROBOT_PLANNER_ACTIONS = _render_action_signatures(ACTIONS)
 
 
 _DOMESTIC_ROBOT_PROMPT_TEMPLATE = """
@@ -570,6 +659,11 @@ class DomesticRobotInstructions(BaseModel):
         # prompt = prompt.replace("{additional_instructions}", self.text)
         # prompt = prompt.replace("{_SYSTEM_PROMPT_BASICS}", _SYSTEM_PROMPT_BASICS)
         return prompt
+
+    def make_guided_grammar(self) -> str | None:
+        if os.environ.get("UNMUTE_GUIDED_DECODING", "1") == "0":
+            return None
+        return _render_domestic_robot_grammar(ACTIONS)
 
 
 Instructions = Annotated[

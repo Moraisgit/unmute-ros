@@ -198,6 +198,10 @@ class UnmuteHandler(AsyncStreamHandler):
         llm_stopwatch = Stopwatch()
 
         quest = await self.start_up_tts(generating_message_i)
+        instructions = self.chatbot.get_instructions()
+        make_grammar = getattr(instructions, "make_guided_grammar", None)
+        guided_grammar = make_grammar() if make_grammar is not None else None
+
         llm = VLLMStream(
             # if generating_message_i is 2, then we have a system prompt + an empty
             # assistant message signalling that we are generating a response.
@@ -205,6 +209,7 @@ class UnmuteHandler(AsyncStreamHandler):
             temperature=FIRST_MESSAGE_TEMPERATURE
             if generating_message_i == 2
             else FURTHER_MESSAGES_TEMPERATURE,
+            guided_grammar=guided_grammar,
         )
 
         messages = self.chatbot.preprocessed_messages()
