@@ -226,13 +226,12 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
     derived from ACTIONS; output_variable is only allowed on actions whose
     return type is not bool.
     """
-    action_rule_names = [f"act-{a.name.replace('_', '-')}" for a in actions]
+    action_rule_names = [a.name for a in actions]
     action_alt = " | ".join(action_rule_names)
 
     lines: list[str] = []
     lines.append(
-        "root ::= reasoning speech | reasoning speech exec"
-        " | reasoning plan speech exec"
+        "root ::= reasoning speech exec | reasoning plan speech exec"
     )
     lines.append("")
     lines.append('reasoning ::= "<reasoning>" inner-text "</reasoning>"')
