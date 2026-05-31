@@ -433,8 +433,8 @@ last <exec>. Read the JSON payload, update your plan state, and emit the next <e
 If the action failed, replan or ask for help.
 
 ### 5.1 ACTION RESULT FORMAT
-<action_result>{"action":"find_object","status":"SUCCEEDED","output":"found_object","value":"pencil_1"}</action_result>
-<action_result>{"action":"find_object","status":"FAILED","reason":"object not visible from current pose"}</action_result>
+<action_result>{"action":"find_object","status":"SUCCEEDED"}</action_result>
+<action_result>{"action":"find_object","status":"FAILED"}</action_result>
 
 # IMPORTANT
 1. Follow the output rules. This is very important!
