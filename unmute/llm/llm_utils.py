@@ -131,23 +131,34 @@ class VLLMStream:
         self,
         client: AsyncOpenAI,
         temperature: float = 1.0,
+        guided_grammar: str | None = None,
     ):
         """
         If `model` is None, it will look at the available models, and if there is only
         one model, it will use that one. Otherwise, it will raise.
+
+        If `guided_grammar` is provided, vLLM's structured-output backend (xgrammar) is
+        used to constrain decoding to outputs matching the GBNF grammar.
         """
         self.client = client
         self.model = autoselect_model()
         self.temperature = temperature
+        self.guided_grammar = guided_grammar
 
     async def chat_completion(
         self, messages: list[dict[str, str]]
     ) -> AsyncIterator[str]:
+        extra_body: dict[str, Any] = {}
+        if self.guided_grammar is not None:
+            extra_body["guided_grammar"] = self.guided_grammar
+            extra_body["guided_decoding_backend"] = "xgrammar"
+
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=cast(Any, messages),  # Cast and hope for the best
             stream=True,
             temperature=self.temperature,
+            extra_body=extra_body or None,
         )
 
         async with stream:

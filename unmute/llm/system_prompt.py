@@ -1,6 +1,8 @@
 import datetime
 import json
+import os
 import random
+from dataclasses import dataclass
 from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
@@ -8,6 +10,13 @@ from pydantic import BaseModel, Field
 from unmute.llm.llm_utils import autoselect_model
 from unmute.llm.newsapi import get_news
 from unmute.llm.quiz_show_questions import QUIZ_SHOW_QUESTIONS
+from unmute.llm.robot_world import (
+    ROOMS,
+    SURFACES,
+    choice_sets,
+    is_simulator_set,
+    objects_for,
+)
 
 _SYSTEM_PROMPT_BASICS = """
 You're in a speech conversation with a human user. Their text is being transcribed using
@@ -76,106 +85,328 @@ If they don't answer three times, say some sort of goodbye message and end your 
 with "Bye!"
 """
 
-_ROBOT_PLANNER_ACTIONS = """
-def move(destination: str) -> bool:
-    '''
-    Moves the robot to a specified location.
-    Args:
-        destination (str): The semantic name of the destination.
-    Returns:
-        bool: Indicates whether the move action was successful.
-    '''
 
-def find_object(object: str, location: str) -> str:
-    '''
-    Find an object in the scene.
-    Args:
-        object (str): The description of the object to find.
-        location (str): The location where the object should be found.
-    Returns:
-        str: The unique ID of the found object, which can be used in subsequent commands.
-    '''
+@dataclass(frozen=True)
+class ActionArg:
+    name: str
+    py_type: str  # "str" or "bool"
+    description: str
+    default: str | None = None  # literal default (e.g. "false"); rendered in signatures
+    fixed_value: str | None = (
+        None  # if set, the grammar pins this arg to this exact string literal
+    )
+    choices: str | None = (
+        None  # if set, name of a CHOICE_SETS entry the grammar restricts this arg to
+    )
 
-def find_objects(object: str, location: str) -> list[str]:
-    '''
-    Find all objects of a certain type in the scene.
-    Args:
-        object (str): The descriptions of the objects to find.
-        location (str): The location where the objects should be found.
-    Returns:
-        list[str]: A list of unique IDs of the found objects, which can be used in subsequent commands.
-    '''
 
-def pick(object: str) -> bool:
-    '''
-    Picks up an object identified by its unique ID. The object must have been found using find_object.
-    Args:
-        object (str): The ID of the object to pick up.
-    Returns:
-        bool: Indicates whether the pick action was successful.
-    '''
+@dataclass(frozen=True)
+class ActionDef:
+    name: str
+    args: tuple[ActionArg, ...]
+    output: (
+        str | None
+    )  # variable name emitted in the "output" key, or None if the action returns nothing
+    summary: str  # first sentence of the docstring
+    output_desc: (
+        str  # description of the bound output value (empty when output is None)
+    )
 
-def place(destination: str) -> bool:
-    '''
-    Places the currently held object on a specified surface. The robot must already be holding an object.
-    Args:
-        destination (str): Semantic name of the surface where to place the object.
-    Returns:
-        bool: Indicates whether the place action was successful.
-    '''
 
-def find_person(location: str, person: str, person_info: str) -> str:
-    '''
-    Finds a person based on identifying features in a given location.
-    Args:
-        location (str): The location where to look for the person.
-        person (str): The main identifier of the person (name, gender, age, or "person").
-        person_info (str): Additional description of the person (pose, clothes, etc.).
-    Returns:
-        str: The unique ID of the found person, which can be used in subsequent commands.
-    '''
+def _returns_value(a: ActionDef) -> bool:
+    """Whether this action binds a value via its "output" key."""
+    return a.output is not None
 
-def find_people(location: str, person: str, person_info: str) -> list[str]:
-    '''
-    Finds all people matching the given description.
-    Args:
-        location (str): The location where to look for the people.
-        person (str): The main identifier of the people (name, gender, age, or "people").
-        person_info (str): Additional description of the people (pose, clothes, etc.).
-    Returns:
-        list[str]: A list of unique IDs of the found people, which can be used in subsequent commands.
-    '''
 
-def guide(person_id: str, destination: str) -> bool:
-    '''
-    Guides a person identified by their ID to a specified location. The person must have been found using find_person.
-    Args:
-        person_id (str): The ID of the person (must have been found using find_person earlier).
-        destination (str): The semantic name of the destination.
-    Returns:
-        bool: Indicates whether the guide action was successful.
-    '''
+ACTIONS: tuple[ActionDef, ...] = (
+    ActionDef(
+        name="move",
+        args=(
+            ActionArg(
+                "destination",
+                "str",
+                "Where to move to. Must be a known room or surface.",
+                choices="places",
+            ),
+        ),
+        output=None,
+        summary="Moves the robot to a specified location.",
+        output_desc="",
+    ),
+    ActionDef(
+        name="find_object",
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to find. Must be one of the known object names.",
+                choices="objects",
+            ),
+            ActionArg(
+                "object_info",
+                "str",
+                "Additional description of the object (color, size, etc.). May be an empty string.",
+            ),
+            ActionArg(
+                "location",
+                "str",
+                "Where the object should be found. Must be a known room or surface.",
+                choices="places",
+            ),
+            ActionArg(
+                "find_objects",
+                "bool",
+                "If true, find all matching objects instead of just one.",
+                default="false",
+            ),
+        ),
+        output="found_object",
+        summary="Find an object in the scene. Set find_objects to true to find every matching object instead of a single one.",
+        output_desc="The unique ID of the found object (or a list of IDs when find_objects is true), usable in subsequent actions.",
+    ),
+    ActionDef(
+        name="pick",
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to pick up. Must be {found_object}, bound by a preceding find_object.",
+                fixed_value="{found_object}",
+            ),
+        ),
+        output=None,
+        summary="Picks up an object identified by its unique ID. The object must have been found using find_object.",
+        output_desc="",
+    ),
+    ActionDef(
+        name="place",
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to place. Must be {found_object}, bound by a preceding find_object. The robot must already be holding it.",
+                fixed_value="{found_object}",
+            ),
+            ActionArg(
+                "destination",
+                "str",
+                "The surface to place the object on. Must be a known surface.",
+                choices="surfaces",
+            ),
+        ),
+        output=None,
+        summary="Places a held object on a specified surface. The robot must already be holding the object.",
+        output_desc="",
+    ),
+    ActionDef(
+        name="find_person",
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                'The main identifier of the person (name, gender, age, or "person").',
+            ),
+            ActionArg(
+                "location",
+                "str",
+                "Where to look for the person. Must be a known room or surface.",
+                choices="places",
+            ),
+            ActionArg(
+                "find_people",
+                "bool",
+                "If true, find all matching people instead of just one.",
+                default="false",
+            ),
+        ),
+        output="found_person",
+        summary="Finds a person based on identifying features in a given location. Set find_people to true to find every matching person instead of a single one.",
+        output_desc="The unique ID of the found person (or a list of IDs when find_people is true), usable in subsequent actions.",
+    ),
+    ActionDef(
+        name="guide",
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                "The person to guide. Must be {found_person}, bound by a preceding find_person.",
+                fixed_value="{found_person}",
+            ),
+            ActionArg(
+                "destination",
+                "str",
+                "Where to guide the person to. Must be a known room or surface.",
+                choices="places",
+            ),
+        ),
+        output=None,
+        summary="Guides a person identified by their ID to a specified location. The person must have been found using find_person.",
+        output_desc="",
+    ),
+    ActionDef(
+        name="follow",
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                "The person to follow. Must be {found_person}, bound by a preceding find_person.",
+                fixed_value="{found_person}",
+            ),
+        ),
+        output=None,
+        summary="Follows a person identified by their ID. The person must have been found using find_person.",
+        output_desc="",
+    ),
+    ActionDef(
+        name="deliver",
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to deliver. Must be {found_object}, bound by a preceding find_object.",
+                fixed_value="{found_object}",
+            ),
+            ActionArg(
+                "person",
+                "str",
+                "The ID of the person to whom the object will be delivered.",
+            ),
+        ),
+        output=None,
+        summary="Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.",
+        output_desc="",
+    ),
+)
 
-def follow(person_id: str, destination: str) -> bool:
-    '''
-    Follows a person identified by their ID. The person must have been found using find_person.
-    Args:
-        person_id (str): The ID of the person to follow.
-        destination (str): The semantic name of the destination. If empty, the robot will only stop when told.
-    Returns:
-        bool: Indicates whether the follow action was successful.
-    '''
 
-def deliver(object: str, person: str) -> bool:
-    '''
-    Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.
-    Args:
-        object (str): The ID of the object to be delivered.
-        person (str): The ID of the person to whom the object will be delivered.
-    Returns:
-        bool: Indicates whether the deliver action was successful.
-    '''
-"""
+def _render_action_signatures(actions: tuple[ActionDef, ...]) -> str:
+    """Render the action registry as Python function signatures for the prompt.
+
+    The signatures describe the available actions and their arguments; the JSON
+    wire format the LLM must actually emit (nested ``parameters`` + ``output``) is
+    shown by the worked examples in the prompt template.
+    """
+    lines = [""]
+    for a in actions:
+        sig_parts: list[str] = []
+        for arg in a.args:
+            part = f"{arg.name}: {arg.py_type}"
+            if arg.default is not None:
+                part += f" = {arg.default}"
+            sig_parts.append(part)
+        sig = ", ".join(sig_parts)
+        ret = "str" if _returns_value(a) else "None"
+        lines.append(f"def {a.name}({sig}) -> {ret}:")
+        lines.append("    '''")
+        lines.append(f"    {a.summary}")
+        lines.append("    Args:")
+        for arg in a.args:
+            lines.append(f"        {arg.name} ({arg.py_type}): {arg.description}")
+        if _returns_value(a):
+            lines.append("    Returns:")
+            lines.append(f'        bound to "{a.output}": {a.output_desc}')
+        lines.append("    '''")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _render_domestic_robot_grammar(
+    actions: tuple[ActionDef, ...], objects: tuple[str, ...] | None = None
+) -> str:
+    """Generate a GBNF grammar enforcing the domestic robot output format.
+
+    Top-level shape: think [plan] speech [exec], with the constraint that
+    plan present implies exec present. Each action is a strict per-name rule
+    derived from ACTIONS, emitting ``{"name": ..., "parameters": {...}, "output": ...}``.
+    The ``output`` value is a fixed literal per action: the bound variable name,
+    or JSON ``null`` for actions that return nothing.
+    """
+    action_rule_names = [a.name for a in actions]
+    action_alt = " | ".join(action_rule_names)
+
+    lines: list[str] = []
+    lines.append("root ::= think speech exec | think plan speech exec")
+    lines.append("")
+    lines.append('think ::= "<think>" inner-text "</think>"')
+    lines.append('speech    ::= "<speech>" inner-text "</speech>"')
+    lines.append(
+        'plan      ::= "<plan>" ws "[" ws action ("," ws action)* ws "]" ws "</plan>"'
+    )
+    lines.append('exec      ::= "<exec>" ws action ws "</exec>"')
+    lines.append("")
+    lines.append(f"action ::= {action_alt}")
+    lines.append("")
+
+    for a, rule_name in zip(actions, action_rule_names, strict=True):
+        parts: list[str] = []
+        parts.append('"{" ws')
+        parts.append('"\\"name\\"" ws ":" ws ' + f'"\\"{a.name}\\""')
+        parts.append('"," ws "\\"parameters\\"" ws ":" ws "{" ws')
+        for i, arg in enumerate(a.args):
+            if i > 0:
+                parts.append('"," ws')
+            if arg.fixed_value is not None:
+                value_rule = f'"\\"{arg.fixed_value}\\""'
+            elif arg.choices is not None:
+                value_rule = arg.choices
+            elif arg.py_type == "bool":
+                value_rule = "boolean"
+            else:
+                value_rule = "string"
+            parts.append(f'"\\"{arg.name}\\"" ws ":" ws {value_rule}')
+        parts.append('ws "}"')
+        if _returns_value(a):
+            output_literal = f'"\\"{a.output}\\""'
+        else:
+            output_literal = '"null"'
+        parts.append('"," ws "\\"output\\"" ws ":" ws ' + output_literal)
+        parts.append('ws "}"')
+        lines.append(f"{rule_name} ::= " + " ".join(parts))
+
+    # Emit a named rule for each choice set referenced by an arg, in first-use order.
+    sets = choice_sets(objects)
+    used_choices: list[str] = []
+    for a in actions:
+        for arg in a.args:
+            if arg.choices is not None and arg.choices not in used_choices:
+                used_choices.append(arg.choices)
+    if used_choices:
+        lines.append("")
+        for name in used_choices:
+            options = " | ".join(f'"\\"{v}\\""' for v in sets[name])
+            lines.append(f"{name} ::= {options}")
+
+    lines.append("")
+    lines.append("inner-text ::= [^<]+")
+    lines.append('string     ::= "\\"" ([^"\\\\] | "\\\\" .)* "\\""')
+    lines.append('boolean    ::= "true" | "false"')
+    lines.append("ws         ::= [ \\t\\n]*")
+    return "\n".join(lines) + "\n"
+
+
+def _render_known_locations() -> str:
+    """Render the KNOWN LOCATIONS prompt block from the location macros."""
+    return (
+        f"Rooms: {', '.join(ROOMS)}\n"
+        f"Surfaces: {', '.join(SURFACES)}\n"
+        'For "move"/"guide" destinations and "find_object"/"find_person" locations, '
+        "use any room or surface.\n"
+        'For "place" the destination must be one of the surfaces.'
+    )
+
+
+def _render_known_objects(objects: tuple[str, ...], is_sim: bool) -> str:
+    """Render the KNOWN OBJECTS prompt block from the given object set."""
+    which = "simulator" if is_sim else "real-life"
+    names = ", ".join(objects)
+    return (
+        f'These are the only object names you may use in "find_object" '
+        f"({which} set). Map what the user says to the closest one.\n{names}"
+    )
+
+
+_ROBOT_PLANNER_ACTIONS = _render_action_signatures(ACTIONS)
+_ROBOT_KNOWN_LOCATIONS = _render_known_locations()
 
 
 _DOMESTIC_ROBOT_PROMPT_TEMPLATE = """
@@ -184,12 +415,12 @@ You are Bob, an intelligent domestic service robot. You navigate real-world envi
 Your tone is helpful, friendly, brief, and naturally conversational.
 
 You act as both a task planner and a conversational agent. You reason, plan and speak about tasks and questions proposed by a human user.
-For this to work, your responses are externally processed to distinguish your reasoning, plans, your speech and what you want to do next.
+For this to work, your responses are externally processed to distinguish your think, plans, your speech and what you want to do next.
 
 # OUTPUT FORMAT
 For your responses to be processed this is extremely important!
 You need to enclose the contents of your responses with XML tags:
-- <reasoning> [Your internal chain-of-thought] </reasoning>
+- <think> [Your internal chain-of-thought] </think>
 - <plan> [JSON set of actions] </plan>
 - <speech> [What is to be spoken out loud to the user] </speech>
 - <exec> [The action you want to execute next] </exec>
@@ -197,11 +428,11 @@ You need to enclose the contents of your responses with XML tags:
 # HOW YOU WORK
 When the user speaks to you either commanding you to do a task or asking you something, you have a flow of thought.
 
-## 1. REASONING
+## 1. THINK
 The first thing you do is reason about the user's speech. What he wants, what he's intending you do to.
 
-### 1.1. EXAMPLE OF REASONING TRACE
-<reasoning>The user has requested me to move two toilet paper rolls into a cabinet. I will first locate the toilet paper rolls at the toilet, pick them up one by one, and place them into a cabinet. I will create a plan to achieve this.</reasoning>
+### 1.1. EXAMPLE OF THINKING TRACE
+<think>The user has requested me to move two pencils onto the desk. I will locate a pencil at the dresser, pick it up, place it on the desk, then locate the second pencil at the shelf and do the same. I will create a plan to achieve this.</think>
 
 ## 2. PLAN
 When the user requests some task you need to accomplish you need to plan a JSON set of actions that make up a plan to accomplish the task goal.
@@ -210,8 +441,47 @@ When the user requests some task you need to accomplish you need to plan a JSON 
 You are only allowed to use these python functions (actions) in your JSON plans!
 {available_actions}
 
-### 2.2 EXAMPLE OF JSON PLAN TRACE
-<plan>\n[\n  {\n    \"name\": \"find_object\",\n    \"location\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"find_object\",\n    \"location\": \"toilet\",\n    \"object\": \"toilet paper\",\n    \"output_variable\": \"found_object\"\n  },\n  {\n    \"name\": \"pick\",\n    \"object\": \"{found_object}\"\n  },\n  {\n    \"name\": \"place\",\n    \"destination\": \"cabinet\",\n    \"object\": \"{found_object}\"\n  }\n]\n</plan>
+### 2.2 KNOWN LOCATIONS
+These are the only rooms and surfaces you may reference. Pick the closest match to what the user says.
+{known_locations}
+
+### 2.3 KNOWN OBJECTS
+{known_objects}
+
+### 2.4 EXAMPLE OF JSON PLAN TRACE
+Every action is an object with three keys: "name", a nested "parameters" object, and "output".
+"output" is the variable name an action binds (e.g. "found_object") or null if it returns nothing.
+Reference a previously bound value in later parameters with braces, e.g. "{found_object}".
+To find every matching object/person instead of just one, set "find_objects"/"find_people" to true.
+<plan>
+[
+  {
+    "name": "find_object",
+    "parameters": {
+      "object": "pencil",
+      "object_info": "",
+      "location": "cabinet",
+      "find_objects": false
+    },
+    "output": "found_object"
+  },
+  {
+    "name": "pick",
+    "parameters": {
+      "object": "{found_object}"
+    },
+    "output": null
+  },
+  {
+    "name": "place",
+    "parameters": {
+      "object": "{found_object}",
+      "destination": "desk"
+    },
+    "output": null
+  }
+]
+</plan>
 
 ## 3. SPEECH
 You need to communicate to the user what you intend to do and what you are doing.
@@ -221,13 +491,24 @@ Write as a human would speak.
 Respond in the language the user is speaking.
 
 ### 3.1. EXAMPLE OF SPEECH TRACE
-<speech>I will now start by finding the first toilet paper roll at the toilet.</speech>
+<speech>I will now start by finding the first pencil at the cabinet.</speech>
 
 ## 4. EXECUTION
 You have made a plan for some user request so now the exterior needs to know which actions need to be executed. You also output this in a JSON way.
 
 ### 4.1. EXAMPLE OF EXECUTION TRACE
-<exec>\n{\n  \"name\": \"find_object\",\n  \"location\": \"toilet\",\n  \"object\": \"toilet paper\",\n  \"output_variable\": \"found_object\"\n}\n</exec>
+<exec>
+{
+  "name": "find_object",
+  "parameters": {
+    "object": "pencil",
+    "object_info": "",
+    "location": "cabinet",
+    "find_objects": false
+  },
+  "output": "found_object"
+}
+</exec>
 
 ## 5. ACTION RESULTS
 You will sometimes receive a message wrapped in <action_result>...</action_result>.
@@ -235,14 +516,14 @@ This is NOT the user speaking. It is feedback from the execution layer about you
 last <exec>. Read the JSON payload, update your plan state, and emit the next <exec>.
 If the action failed, replan or ask for help.
 
-### 5.1 ACTION RESULT FORMAT
-<action_result>{"action":"find_object","status":"SUCCEEDED","output_variable":"found_object","value":"toilet_paper_1"}</action_result>
-<action_result>{"action":"find_object","status":"FAILED","reason":"object not visible from current pose"}</action_result>
+### 5.1 EXAMPLE OF ACTION RESULT FORMAT
+<action_result>{"action":"find_object","status":"SUCCEEDED"}</action_result>
+<action_result>{"action":"find_object","status":"FAILED"}</action_result>
 
 # IMPORTANT
 1. Follow the output rules. This is very important!
 2. You should not generate plans on every response. Only generate plans when new tasks are requested or when something goes wrong.
-3. Reasoning: This is very important. You should reason on every response what you should do. Also if no plan is needed then you should reason this, only producing speech tags.
+3. Thinking: This is very important. You should reason on every response what you should do. Also if no plan is needed then you should reason this, only producing speech tags.
 4. Do not plan more than once per user request unless the user explicitly asks you to re-plan.
 5. If an action fails more than twice in a row, ask the user for help instead of replanning indefinitely.
 
@@ -562,14 +843,29 @@ class DomesticRobotInstructions(BaseModel):
     text: str = (
         "Help with household tasks, stay calm and practical, and keep answers concise."
     )
+    # Which object vocabulary to expose: "sim" (AI2-THOR) or "real" (physical robot).
+    # The local bridge client sets this from ACTION_SIMULATOR; None falls back to the
+    # backend's own ACTION_SIMULATOR env var.
+    object_set: Literal["sim", "real"] | None = None
 
     def make_system_prompt(self) -> str:
+        objects = objects_for(self.object_set)
+        is_sim = is_simulator_set(self.object_set)
         prompt = _DOMESTIC_ROBOT_PROMPT_TEMPLATE
         prompt = prompt.replace("{available_actions}", _ROBOT_PLANNER_ACTIONS)
+        prompt = prompt.replace("{known_locations}", _ROBOT_KNOWN_LOCATIONS)
+        prompt = prompt.replace(
+            "{known_objects}", _render_known_objects(objects, is_sim)
+        )
         # prompt = prompt.replace("{language_instructions}", LANGUAGE_CODE_TO_INSTRUCTIONS[self.language])
         # prompt = prompt.replace("{additional_instructions}", self.text)
         # prompt = prompt.replace("{_SYSTEM_PROMPT_BASICS}", _SYSTEM_PROMPT_BASICS)
         return prompt
+
+    def make_guided_grammar(self) -> str | None:
+        if os.environ.get("UNMUTE_GUIDED_DECODING", "1") == "0":
+            return None
+        return _render_domestic_robot_grammar(ACTIONS, objects_for(self.object_set))
 
 
 Instructions = Annotated[

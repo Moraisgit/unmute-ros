@@ -68,8 +68,8 @@ const ROLE_CONFIG: Partial<Record<ChatRole, RoleConfig>> = {
     textClass: "font-mono text-xs md:text-sm text-lightgray",
     preserveWhitespace: true,
   },
-  llm_reasoning: {
-    label: "Unmute - Reasoning",
+  llm_think: {
+    label: "Unmute - Think",
     containerClass: "border-purple/60 bg-purple/10",
     labelClass: "text-purple",
     textClass: "",

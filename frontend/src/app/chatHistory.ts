@@ -3,7 +3,7 @@ export type ChatRole =
   | "assistant"
   | "system"
   | "llm_raw"
-  | "llm_reasoning"
+  | "llm_think"
   | "llm_plan"
   | "llm_speech"
   | "llm_exec"

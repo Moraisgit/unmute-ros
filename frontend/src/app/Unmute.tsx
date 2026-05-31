@@ -362,7 +362,7 @@ const Unmute = () => {
       const content =
         typeof data.content === "string" ? data.content : "";
       const roleMap: Record<string, ChatRole> = {
-        reasoning: "llm_reasoning",
+        think: "llm_think",
         plan: "llm_plan",
         speech: "llm_speech",
         exec: "llm_exec",

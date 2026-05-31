@@ -25,6 +25,10 @@ UNMUTE_SAMPLE_RATE = int(os.environ.get("UNMUTE_SAMPLE_RATE", "24000"))
 RESAMPLE_AUDIO = os.environ.get("RESAMPLE_AUDIO", "false").lower() == "true"
 UNMUTE_VOICE = os.environ.get("UNMUTE_VOICE", None)
 ALLOW_RECORDING = os.environ.get("ALLOW_RECORDING", "false").lower() == "true"
+# Drives which object vocabulary the backend exposes for domestic-robot planning.
+# Read locally and forwarded to the (possibly remote) backend via session.update,
+# since the backend can't see this client's environment.
+ACTION_SIMULATOR = os.environ.get("ACTION_SIMULATOR", "false").lower() == "true"
 RECONNECT_DELAY_SEC = float(os.environ.get("RECONNECT_DELAY_SEC", "3.0"))
 PRINT_TEXT_DELTAS = os.environ.get("PRINT_TEXT_DELTAS", "false").lower() == "true"
 DEBUG_MIC_INPUT = os.environ.get("DEBUG_MIC_INPUT", "false").lower() == "true"
@@ -72,14 +76,14 @@ def _make_label(tag: str, color_code: str) -> str:
 
 USER_LABEL = _make_label("User", "\033[92m")
 UNMUTE_LABEL = _make_label("Unmute", "\033[96m")
-REASONING_LABEL = _make_label("Unmute - Reasoning", "\033[95m")
+THINK_LABEL = _make_label("Unmute - Think", "\033[95m")
 PLAN_LABEL = _make_label("Unmute - Plan", "\033[93m")
 SPEECH_TAG_LABEL = _make_label("Unmute - Speech", "\033[96m")
 EXEC_LABEL = _make_label("Unmute - Exec", "\033[94m")
 ACTION_RESULT_LABEL = _make_label("Action Feedback", "\033[92m")
 RAW_LLM_LABEL = _make_label("Unmute - Raw LLM", "\033[36m")
 TAG_LABELS: dict[str, str] = {
-    "reasoning": REASONING_LABEL,
+    "think": THINK_LABEL,
     "plan": PLAN_LABEL,
     "speech": SPEECH_TAG_LABEL,
     "exec": EXEC_LABEL,
@@ -143,7 +147,7 @@ def _needs_boundary_space(last_char: str | None, new_text: str) -> bool:
     # Keep punctuation/contractions tight.
     if first_char in ",.!?;:)]}\"'":
         return False
-    if last_char in "([{\"":
+    if last_char in '([{"':
         return False
     if last_char in "'-/":
         return False
@@ -218,12 +222,16 @@ async def _send_initial_session_update(unmute_ws: websockets.ClientConnection) -
         UNMUTE_VOICE,
     )
 
-    session = {
+    session: dict[str, object] = {
         "allow_recording": ALLOW_RECORDING,
     }
     if resolved_voice:
         session["voice"] = resolved_voice
     if resolved_instructions:
+        # For the domestic-robot planner, tell the backend which object set to use
+        # (simulator vs real life) based on our local ACTION_SIMULATOR flag.
+        if resolved_instructions.get("type") == "domestic_robot":
+            resolved_instructions["object_set"] = "sim" if ACTION_SIMULATOR else "real"
         session["instructions"] = resolved_instructions
 
     payload = {
@@ -472,7 +480,7 @@ async def run_bridge() -> None:
                             last_char_by_speaker: dict[str, str | None] = {
                                 "user": None,
                                 "unmute": None,
-                                "llm_tag_reasoning": None,
+                                "llm_tag_think": None,
                                 "llm_tag_plan": None,
                                 "llm_tag_speech": None,
                                 "llm_tag_exec": None,
