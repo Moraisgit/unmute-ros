@@ -85,6 +85,9 @@ class ActionArg:
     py_type: str  # "str" or "bool"
     description: str
     default: str | None = None  # literal default (e.g. "false"); rendered in signatures
+    fixed_value: str | None = (
+        None  # if set, the grammar pins this arg to this exact string literal
+    )
 
 
 @dataclass(frozen=True)
@@ -118,14 +121,16 @@ ACTIONS: tuple[ActionDef, ...] = (
     ActionDef(
         name="find_object",
         args=(
-            ActionArg("object", "str", "The description of the object to find."),
+            ActionArg("object", "str", "The semantic name of the object to find."),
             ActionArg(
                 "object_info",
                 "str",
                 "Additional description of the object (color, size, etc.). May be an empty string.",
             ),
             ActionArg(
-                "location", "str", "The location where the object should be found."
+                "location",
+                "str",
+                "The semantic name of the location where the object should be found.",
             ),
             ActionArg(
                 "find_objects",
@@ -140,7 +145,14 @@ ACTIONS: tuple[ActionDef, ...] = (
     ),
     ActionDef(
         name="pick",
-        args=(ActionArg("object", "str", "The ID of the object to pick up."),),
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to pick up. Must be {found_object}, bound by a preceding find_object.",
+                fixed_value="{found_object}",
+            ),
+        ),
         output=None,
         summary="Picks up an object identified by its unique ID. The object must have been found using find_object.",
         output_desc="",
@@ -151,7 +163,8 @@ ACTIONS: tuple[ActionDef, ...] = (
             ActionArg(
                 "object",
                 "str",
-                "The ID of the object to place. The robot must already be holding it.",
+                "The object to place. Must be {found_object}, bound by a preceding find_object. The robot must already be holding it.",
+                fixed_value="{found_object}",
             ),
             ActionArg(
                 "destination",
@@ -189,7 +202,8 @@ ACTIONS: tuple[ActionDef, ...] = (
             ActionArg(
                 "person",
                 "str",
-                "The ID of the person (must have been found using find_person earlier).",
+                "The person to guide. Must be {found_person}, bound by a preceding find_person.",
+                fixed_value="{found_person}",
             ),
             ActionArg("destination", "str", "The semantic name of the destination."),
         ),
@@ -199,7 +213,14 @@ ACTIONS: tuple[ActionDef, ...] = (
     ),
     ActionDef(
         name="follow",
-        args=(ActionArg("person", "str", "The ID of the person to follow."),),
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                "The person to follow. Must be {found_person}, bound by a preceding find_person.",
+                fixed_value="{found_person}",
+            ),
+        ),
         output=None,
         summary="Follows a person identified by their ID. The person must have been found using find_person.",
         output_desc="",
@@ -207,7 +228,12 @@ ACTIONS: tuple[ActionDef, ...] = (
     ActionDef(
         name="deliver",
         args=(
-            ActionArg("object", "str", "The ID of the object to be delivered."),
+            ActionArg(
+                "object",
+                "str",
+                "The object to deliver. Must be {found_object}, bound by a preceding find_object.",
+                fixed_value="{found_object}",
+            ),
             ActionArg(
                 "person",
                 "str",
@@ -285,7 +311,12 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
         for i, arg in enumerate(a.args):
             if i > 0:
                 parts.append('"," ws')
-            value_rule = "boolean" if arg.py_type == "bool" else "string"
+            if arg.fixed_value is not None:
+                value_rule = f'"\\"{arg.fixed_value}\\""'
+            elif arg.py_type == "bool":
+                value_rule = "boolean"
+            else:
+                value_rule = "string"
             parts.append(f'"\\"{arg.name}\\"" ws ":" ws {value_rule}')
         parts.append('ws "}"')
         if _returns_value(a):
