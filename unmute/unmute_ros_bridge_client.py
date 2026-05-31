@@ -25,6 +25,10 @@ UNMUTE_SAMPLE_RATE = int(os.environ.get("UNMUTE_SAMPLE_RATE", "24000"))
 RESAMPLE_AUDIO = os.environ.get("RESAMPLE_AUDIO", "false").lower() == "true"
 UNMUTE_VOICE = os.environ.get("UNMUTE_VOICE", None)
 ALLOW_RECORDING = os.environ.get("ALLOW_RECORDING", "false").lower() == "true"
+# Drives which object vocabulary the backend exposes for domestic-robot planning.
+# Read locally and forwarded to the (possibly remote) backend via session.update,
+# since the backend can't see this client's environment.
+ACTION_SIMULATOR = os.environ.get("ACTION_SIMULATOR", "false").lower() == "true"
 RECONNECT_DELAY_SEC = float(os.environ.get("RECONNECT_DELAY_SEC", "3.0"))
 PRINT_TEXT_DELTAS = os.environ.get("PRINT_TEXT_DELTAS", "false").lower() == "true"
 DEBUG_MIC_INPUT = os.environ.get("DEBUG_MIC_INPUT", "false").lower() == "true"
@@ -143,7 +147,7 @@ def _needs_boundary_space(last_char: str | None, new_text: str) -> bool:
     # Keep punctuation/contractions tight.
     if first_char in ",.!?;:)]}\"'":
         return False
-    if last_char in "([{\"":
+    if last_char in '([{"':
         return False
     if last_char in "'-/":
         return False
@@ -218,12 +222,16 @@ async def _send_initial_session_update(unmute_ws: websockets.ClientConnection) -
         UNMUTE_VOICE,
     )
 
-    session = {
+    session: dict[str, object] = {
         "allow_recording": ALLOW_RECORDING,
     }
     if resolved_voice:
         session["voice"] = resolved_voice
     if resolved_instructions:
+        # For the domestic-robot planner, tell the backend which object set to use
+        # (simulator vs real life) based on our local ACTION_SIMULATOR flag.
+        if resolved_instructions.get("type") == "domestic_robot":
+            resolved_instructions["object_set"] = "sim" if ACTION_SIMULATOR else "real"
         session["instructions"] = resolved_instructions
 
     payload = {

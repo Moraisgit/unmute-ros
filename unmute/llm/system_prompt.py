@@ -10,6 +10,13 @@ from pydantic import BaseModel, Field
 from unmute.llm.llm_utils import autoselect_model
 from unmute.llm.newsapi import get_news
 from unmute.llm.quiz_show_questions import QUIZ_SHOW_QUESTIONS
+from unmute.llm.robot_world import (
+    ROOMS,
+    SURFACES,
+    choice_sets,
+    is_simulator_set,
+    objects_for,
+)
 
 _SYSTEM_PROMPT_BASICS = """
 You're in a speech conversation with a human user. Their text is being transcribed using
@@ -88,6 +95,9 @@ class ActionArg:
     fixed_value: str | None = (
         None  # if set, the grammar pins this arg to this exact string literal
     )
+    choices: str | None = (
+        None  # if set, name of a CHOICE_SETS entry the grammar restricts this arg to
+    )
 
 
 @dataclass(frozen=True)
@@ -112,7 +122,12 @@ ACTIONS: tuple[ActionDef, ...] = (
     ActionDef(
         name="move",
         args=(
-            ActionArg("destination", "str", "The semantic name of the destination."),
+            ActionArg(
+                "destination",
+                "str",
+                "Where to move to. Must be a known room or surface.",
+                choices="places",
+            ),
         ),
         output=None,
         summary="Moves the robot to a specified location.",
@@ -121,7 +136,12 @@ ACTIONS: tuple[ActionDef, ...] = (
     ActionDef(
         name="find_object",
         args=(
-            ActionArg("object", "str", "The semantic name of the object to find."),
+            ActionArg(
+                "object",
+                "str",
+                "The object to find. Must be one of the known object names.",
+                choices="objects",
+            ),
             ActionArg(
                 "object_info",
                 "str",
@@ -130,7 +150,8 @@ ACTIONS: tuple[ActionDef, ...] = (
             ActionArg(
                 "location",
                 "str",
-                "The semantic name of the location where the object should be found.",
+                "Where the object should be found. Must be a known room or surface.",
+                choices="places",
             ),
             ActionArg(
                 "find_objects",
@@ -169,7 +190,8 @@ ACTIONS: tuple[ActionDef, ...] = (
             ActionArg(
                 "destination",
                 "str",
-                "Semantic name of the surface where to place the object.",
+                "The surface to place the object on. Must be a known surface.",
+                choices="surfaces",
             ),
         ),
         output=None,
@@ -184,7 +206,12 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "str",
                 'The main identifier of the person (name, gender, age, or "person").',
             ),
-            ActionArg("location", "str", "The location where to look for the person."),
+            ActionArg(
+                "location",
+                "str",
+                "Where to look for the person. Must be a known room or surface.",
+                choices="places",
+            ),
             ActionArg(
                 "find_people",
                 "bool",
@@ -205,7 +232,12 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "The person to guide. Must be {found_person}, bound by a preceding find_person.",
                 fixed_value="{found_person}",
             ),
-            ActionArg("destination", "str", "The semantic name of the destination."),
+            ActionArg(
+                "destination",
+                "str",
+                "Where to guide the person to. Must be a known room or surface.",
+                choices="places",
+            ),
         ),
         output=None,
         summary="Guides a person identified by their ID to a specified location. The person must have been found using find_person.",
@@ -278,7 +310,9 @@ def _render_action_signatures(actions: tuple[ActionDef, ...]) -> str:
     return "\n".join(lines)
 
 
-def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
+def _render_domestic_robot_grammar(
+    actions: tuple[ActionDef, ...], objects: tuple[str, ...] | None = None
+) -> str:
     """Generate a GBNF grammar enforcing the domestic robot output format.
 
     Top-level shape: think [plan] speech [exec], with the constraint that
@@ -313,6 +347,8 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
                 parts.append('"," ws')
             if arg.fixed_value is not None:
                 value_rule = f'"\\"{arg.fixed_value}\\""'
+            elif arg.choices is not None:
+                value_rule = arg.choices
             elif arg.py_type == "bool":
                 value_rule = "boolean"
             else:
@@ -327,6 +363,19 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
         parts.append('ws "}"')
         lines.append(f"{rule_name} ::= " + " ".join(parts))
 
+    # Emit a named rule for each choice set referenced by an arg, in first-use order.
+    sets = choice_sets(objects)
+    used_choices: list[str] = []
+    for a in actions:
+        for arg in a.args:
+            if arg.choices is not None and arg.choices not in used_choices:
+                used_choices.append(arg.choices)
+    if used_choices:
+        lines.append("")
+        for name in used_choices:
+            options = " | ".join(f'"\\"{v}\\""' for v in sets[name])
+            lines.append(f"{name} ::= {options}")
+
     lines.append("")
     lines.append("inner-text ::= [^<]+")
     lines.append('string     ::= "\\"" ([^"\\\\] | "\\\\" .)* "\\""')
@@ -335,7 +384,29 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _render_known_locations() -> str:
+    """Render the KNOWN LOCATIONS prompt block from the location macros."""
+    return (
+        f"Rooms: {', '.join(ROOMS)}\n"
+        f"Surfaces: {', '.join(SURFACES)}\n"
+        'For "move"/"guide" destinations and "find_object"/"find_person" locations, '
+        "use any room or surface.\n"
+        'For "place" the destination must be one of the surfaces.'
+    )
+
+
+def _render_known_objects(objects: tuple[str, ...], is_sim: bool) -> str:
+    """Render the KNOWN OBJECTS prompt block from the given object set."""
+    which = "simulator" if is_sim else "real-life"
+    names = ", ".join(objects)
+    return (
+        f'These are the only object names you may use in "find_object" '
+        f"({which} set). Map what the user says to the closest one.\n{names}"
+    )
+
+
 _ROBOT_PLANNER_ACTIONS = _render_action_signatures(ACTIONS)
+_ROBOT_KNOWN_LOCATIONS = _render_known_locations()
 
 
 _DOMESTIC_ROBOT_PROMPT_TEMPLATE = """
@@ -370,7 +441,14 @@ When the user requests some task you need to accomplish you need to plan a JSON 
 You are only allowed to use these python functions (actions) in your JSON plans!
 {available_actions}
 
-### 2.2 EXAMPLE OF JSON PLAN TRACE
+### 2.2 KNOWN LOCATIONS
+These are the only rooms and surfaces you may reference. Pick the closest match to what the user says.
+{known_locations}
+
+### 2.3 KNOWN OBJECTS
+{known_objects}
+
+### 2.4 EXAMPLE OF JSON PLAN TRACE
 Every action is an object with three keys: "name", a nested "parameters" object, and "output".
 "output" is the variable name an action binds (e.g. "found_object") or null if it returns nothing.
 Reference a previously bound value in later parameters with braces, e.g. "{found_object}".
@@ -382,7 +460,7 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
     "parameters": {
       "object": "pencil",
       "object_info": "",
-      "location": "dresser",
+      "location": "cabinet",
       "find_objects": false
     },
     "output": "found_object"
@@ -392,7 +470,7 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
     "parameters": {
       "object": "{found_object}"
     },
-    "output": ""
+    "output": null
   },
   {
     "name": "place",
@@ -400,14 +478,14 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
       "object": "{found_object}",
       "destination": "desk"
     },
-    "output": ""
+    "output": null
   },
   {
     "name": "find_object",
     "parameters": {
       "object": "pencil",
       "object_info": "",
-      "location": "shelf",
+      "location": "top shelf",
       "find_objects": false
     },
     "output": "found_object"
@@ -417,7 +495,7 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
     "parameters": {
       "object": "{found_object}"
     },
-    "output": ""
+    "output": null
   },
   {
     "name": "place",
@@ -425,7 +503,7 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
       "object": "{found_object}",
       "destination": "desk"
     },
-    "output": ""
+    "output": null
   }
 ]
 </plan>
@@ -438,7 +516,7 @@ Write as a human would speak.
 Respond in the language the user is speaking.
 
 ### 3.1. EXAMPLE OF SPEECH TRACE
-<speech>I will now start by finding the first pencil at the dresser.</speech>
+<speech>I will now start by finding the first pencil at the cabinet.</speech>
 
 ## 4. EXECUTION
 You have made a plan for some user request so now the exterior needs to know which actions need to be executed. You also output this in a JSON way.
@@ -450,7 +528,7 @@ You have made a plan for some user request so now the exterior needs to know whi
   "parameters": {
     "object": "pencil",
     "object_info": "",
-    "location": "dresser",
+    "location": "cabinet",
     "find_objects": false
   },
   "output": "found_object"
@@ -790,10 +868,20 @@ class DomesticRobotInstructions(BaseModel):
     text: str = (
         "Help with household tasks, stay calm and practical, and keep answers concise."
     )
+    # Which object vocabulary to expose: "sim" (AI2-THOR) or "real" (physical robot).
+    # The local bridge client sets this from ACTION_SIMULATOR; None falls back to the
+    # backend's own ACTION_SIMULATOR env var.
+    object_set: Literal["sim", "real"] | None = None
 
     def make_system_prompt(self) -> str:
+        objects = objects_for(self.object_set)
+        is_sim = is_simulator_set(self.object_set)
         prompt = _DOMESTIC_ROBOT_PROMPT_TEMPLATE
         prompt = prompt.replace("{available_actions}", _ROBOT_PLANNER_ACTIONS)
+        prompt = prompt.replace("{known_locations}", _ROBOT_KNOWN_LOCATIONS)
+        prompt = prompt.replace(
+            "{known_objects}", _render_known_objects(objects, is_sim)
+        )
         # prompt = prompt.replace("{language_instructions}", LANGUAGE_CODE_TO_INSTRUCTIONS[self.language])
         # prompt = prompt.replace("{additional_instructions}", self.text)
         # prompt = prompt.replace("{_SYSTEM_PROMPT_BASICS}", _SYSTEM_PROMPT_BASICS)
@@ -802,7 +890,7 @@ class DomesticRobotInstructions(BaseModel):
     def make_guided_grammar(self) -> str | None:
         if os.environ.get("UNMUTE_GUIDED_DECODING", "1") == "0":
             return None
-        return _render_domestic_robot_grammar(ACTIONS)
+        return _render_domestic_robot_grammar(ACTIONS, objects_for(self.object_set))
 
 
 Instructions = Annotated[
