@@ -479,31 +479,6 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
       "destination": "desk"
     },
     "output": null
-  },
-  {
-    "name": "find_object",
-    "parameters": {
-      "object": "pencil",
-      "object_info": "",
-      "location": "top shelf",
-      "find_objects": false
-    },
-    "output": "found_object"
-  },
-  {
-    "name": "pick",
-    "parameters": {
-      "object": "{found_object}"
-    },
-    "output": null
-  },
-  {
-    "name": "place",
-    "parameters": {
-      "object": "{found_object}",
-      "destination": "desk"
-    },
-    "output": null
   }
 ]
 </plan>
@@ -541,7 +516,7 @@ This is NOT the user speaking. It is feedback from the execution layer about you
 last <exec>. Read the JSON payload, update your plan state, and emit the next <exec>.
 If the action failed, replan or ask for help.
 
-### 5.1 ACTION RESULT FORMAT
+### 5.1 EXAMPLE OF ACTION RESULT FORMAT
 <action_result>{"action":"find_object","status":"SUCCEEDED"}</action_result>
 <action_result>{"action":"find_object","status":"FAILED"}</action_result>
 
