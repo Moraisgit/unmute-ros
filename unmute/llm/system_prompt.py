@@ -91,14 +91,18 @@ class ActionArg:
 class ActionDef:
     name: str
     args: tuple[ActionArg, ...]
-    output: str  # variable name emitted in the "output" key, or "" if the action returns nothing
+    output: (
+        str | None
+    )  # variable name emitted in the "output" key, or None if the action returns nothing
     summary: str  # first sentence of the docstring
-    output_desc: str  # description of the bound output value (empty when output == "")
+    output_desc: (
+        str  # description of the bound output value (empty when output is None)
+    )
 
 
 def _returns_value(a: ActionDef) -> bool:
     """Whether this action binds a value via its "output" key."""
-    return a.output != ""
+    return a.output is not None
 
 
 ACTIONS: tuple[ActionDef, ...] = (
@@ -107,7 +111,7 @@ ACTIONS: tuple[ActionDef, ...] = (
         args=(
             ActionArg("destination", "str", "The semantic name of the destination."),
         ),
-        output="",
+        output=None,
         summary="Moves the robot to a specified location.",
         output_desc="",
     ),
@@ -137,7 +141,7 @@ ACTIONS: tuple[ActionDef, ...] = (
     ActionDef(
         name="pick",
         args=(ActionArg("object", "str", "The ID of the object to pick up."),),
-        output="",
+        output=None,
         summary="Picks up an object identified by its unique ID. The object must have been found using find_object.",
         output_desc="",
     ),
@@ -155,7 +159,7 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "Semantic name of the surface where to place the object.",
             ),
         ),
-        output="",
+        output=None,
         summary="Places a held object on a specified surface. The robot must already be holding the object.",
         output_desc="",
     ),
@@ -189,14 +193,14 @@ ACTIONS: tuple[ActionDef, ...] = (
             ),
             ActionArg("destination", "str", "The semantic name of the destination."),
         ),
-        output="",
+        output=None,
         summary="Guides a person identified by their ID to a specified location. The person must have been found using find_person.",
         output_desc="",
     ),
     ActionDef(
         name="follow",
         args=(ActionArg("person", "str", "The ID of the person to follow."),),
-        output="",
+        output=None,
         summary="Follows a person identified by their ID. The person must have been found using find_person.",
         output_desc="",
     ),
@@ -210,7 +214,7 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "The ID of the person to whom the object will be delivered.",
             ),
         ),
-        output="",
+        output=None,
         summary="Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.",
         output_desc="",
     ),
@@ -254,8 +258,8 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
     Top-level shape: reasoning [plan] speech [exec], with the constraint that
     plan present implies exec present. Each action is a strict per-name rule
     derived from ACTIONS, emitting ``{"name": ..., "parameters": {...}, "output": ...}``.
-    The ``output`` value is a fixed literal per action (the bound variable name,
-    or the empty string for actions that return nothing).
+    The ``output`` value is a fixed literal per action: the bound variable name,
+    or JSON ``null`` for actions that return nothing.
     """
     action_rule_names = [a.name for a in actions]
     action_alt = " | ".join(action_rule_names)
@@ -284,7 +288,11 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
             value_rule = "boolean" if arg.py_type == "bool" else "string"
             parts.append(f'"\\"{arg.name}\\"" ws ":" ws {value_rule}')
         parts.append('ws "}"')
-        parts.append('"," ws "\\"output\\"" ws ":" ws ' + f'"\\"{a.output}\\""')
+        if _returns_value(a):
+            output_literal = f'"\\"{a.output}\\""'
+        else:
+            output_literal = '"null"'
+        parts.append('"," ws "\\"output\\"" ws ":" ws ' + output_literal)
         parts.append('ws "}"')
         lines.append(f"{rule_name} ::= " + " ".join(parts))
 
@@ -333,7 +341,7 @@ You are only allowed to use these python functions (actions) in your JSON plans!
 
 ### 2.2 EXAMPLE OF JSON PLAN TRACE
 Every action is an object with three keys: "name", a nested "parameters" object, and "output".
-"output" is the variable name an action binds (e.g. "found_object") or an empty string "" if it returns nothing.
+"output" is the variable name an action binds (e.g. "found_object") or null if it returns nothing.
 Reference a previously bound value in later parameters with braces, e.g. "{found_object}".
 To find every matching object/person instead of just one, set "find_objects"/"find_people" to true.
 <plan>
