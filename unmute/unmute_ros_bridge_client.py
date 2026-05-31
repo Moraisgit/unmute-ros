@@ -72,14 +72,14 @@ def _make_label(tag: str, color_code: str) -> str:
 
 USER_LABEL = _make_label("User", "\033[92m")
 UNMUTE_LABEL = _make_label("Unmute", "\033[96m")
-REASONING_LABEL = _make_label("Unmute - Reasoning", "\033[95m")
+THINK_LABEL = _make_label("Unmute - Think", "\033[95m")
 PLAN_LABEL = _make_label("Unmute - Plan", "\033[93m")
 SPEECH_TAG_LABEL = _make_label("Unmute - Speech", "\033[96m")
 EXEC_LABEL = _make_label("Unmute - Exec", "\033[94m")
 ACTION_RESULT_LABEL = _make_label("Action Feedback", "\033[92m")
 RAW_LLM_LABEL = _make_label("Unmute - Raw LLM", "\033[36m")
 TAG_LABELS: dict[str, str] = {
-    "reasoning": REASONING_LABEL,
+    "think": THINK_LABEL,
     "plan": PLAN_LABEL,
     "speech": SPEECH_TAG_LABEL,
     "exec": EXEC_LABEL,
@@ -472,7 +472,7 @@ async def run_bridge() -> None:
                             last_char_by_speaker: dict[str, str | None] = {
                                 "user": None,
                                 "unmute": None,
-                                "llm_tag_reasoning": None,
+                                "llm_tag_think": None,
                                 "llm_tag_plan": None,
                                 "llm_tag_speech": None,
                                 "llm_tag_exec": None,

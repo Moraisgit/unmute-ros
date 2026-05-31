@@ -281,7 +281,7 @@ def _render_action_signatures(actions: tuple[ActionDef, ...]) -> str:
 def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
     """Generate a GBNF grammar enforcing the domestic robot output format.
 
-    Top-level shape: reasoning [plan] speech [exec], with the constraint that
+    Top-level shape: think [plan] speech [exec], with the constraint that
     plan present implies exec present. Each action is a strict per-name rule
     derived from ACTIONS, emitting ``{"name": ..., "parameters": {...}, "output": ...}``.
     The ``output`` value is a fixed literal per action: the bound variable name,
@@ -291,9 +291,9 @@ def _render_domestic_robot_grammar(actions: tuple[ActionDef, ...]) -> str:
     action_alt = " | ".join(action_rule_names)
 
     lines: list[str] = []
-    lines.append("root ::= reasoning speech exec | reasoning plan speech exec")
+    lines.append("root ::= think speech exec | think plan speech exec")
     lines.append("")
-    lines.append('reasoning ::= "<reasoning>" inner-text "</reasoning>"')
+    lines.append('think ::= "<think>" inner-text "</think>"')
     lines.append('speech    ::= "<speech>" inner-text "</speech>"')
     lines.append(
         'plan      ::= "<plan>" ws "[" ws action ("," ws action)* ws "]" ws "</plan>"'
@@ -344,12 +344,12 @@ You are Bob, an intelligent domestic service robot. You navigate real-world envi
 Your tone is helpful, friendly, brief, and naturally conversational.
 
 You act as both a task planner and a conversational agent. You reason, plan and speak about tasks and questions proposed by a human user.
-For this to work, your responses are externally processed to distinguish your reasoning, plans, your speech and what you want to do next.
+For this to work, your responses are externally processed to distinguish your think, plans, your speech and what you want to do next.
 
 # OUTPUT FORMAT
 For your responses to be processed this is extremely important!
 You need to enclose the contents of your responses with XML tags:
-- <reasoning> [Your internal chain-of-thought] </reasoning>
+- <think> [Your internal chain-of-thought] </think>
 - <plan> [JSON set of actions] </plan>
 - <speech> [What is to be spoken out loud to the user] </speech>
 - <exec> [The action you want to execute next] </exec>
@@ -357,11 +357,11 @@ You need to enclose the contents of your responses with XML tags:
 # HOW YOU WORK
 When the user speaks to you either commanding you to do a task or asking you something, you have a flow of thought.
 
-## 1. REASONING
+## 1. THINK
 The first thing you do is reason about the user's speech. What he wants, what he's intending you do to.
 
-### 1.1. EXAMPLE OF REASONING TRACE
-<reasoning>The user has requested me to move two pencils onto the desk. I will locate a pencil at the dresser, pick it up, place it on the desk, then locate the second pencil at the shelf and do the same. I will create a plan to achieve this.</reasoning>
+### 1.1. EXAMPLE OF THINKING TRACE
+<think>The user has requested me to move two pencils onto the desk. I will locate a pencil at the dresser, pick it up, place it on the desk, then locate the second pencil at the shelf and do the same. I will create a plan to achieve this.</think>
 
 ## 2. PLAN
 When the user requests some task you need to accomplish you need to plan a JSON set of actions that make up a plan to accomplish the task goal.
@@ -470,7 +470,7 @@ If the action failed, replan or ask for help.
 # IMPORTANT
 1. Follow the output rules. This is very important!
 2. You should not generate plans on every response. Only generate plans when new tasks are requested or when something goes wrong.
-3. Reasoning: This is very important. You should reason on every response what you should do. Also if no plan is needed then you should reason this, only producing speech tags.
+3. Thinking: This is very important. You should reason on every response what you should do. Also if no plan is needed then you should reason this, only producing speech tags.
 4. Do not plan more than once per user request unless the user explicitly asks you to re-plan.
 5. If an action fails more than twice in a row, ask the user for help instead of replanning indefinitely.
 

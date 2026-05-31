@@ -13,8 +13,8 @@ async def run(s: str) -> str:
 
 
 @pytest.mark.asyncio
-async def test_discards_reasoning_plan_exec():
-    src = "<reasoning>think</reasoning><plan>[{}]</plan><speech>hi</speech><exec>{}</exec>"
+async def test_discards_think_plan_exec():
+    src = "<think>think</think><plan>[{}]</plan><speech>hi</speech><exec>{}</exec>"
     assert await run(src) == "hi"
 
 
@@ -37,7 +37,7 @@ async def test_single_char_deltas():
 
 @pytest.mark.asyncio
 async def test_multiple_speech_blocks():
-    src = "<reasoning>r</reasoning><speech>one </speech><plan>p</plan><speech>two</speech>"
+    src = "<think>r</think><speech>one </speech><plan>p</plan><speech>two</speech>"
     assert await run(src) == "one two"
 
 
@@ -53,7 +53,7 @@ async def test_unclosed_speech_flushes_on_eos():
 
 @pytest.mark.asyncio
 async def test_unclosed_non_speech_discarded_on_eos():
-    assert await run("<reasoning>hmm") == ""
+    assert await run("<think>hmm") == ""
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_chunk_yields_are_non_empty_strings():
 
 @pytest.mark.asyncio
 async def test_all_possible_split_points_stable():
-    src = "<reasoning>r</reasoning><speech>hello</speech><plan>p</plan><speech> world</speech>"
+    src = "<think>r</think><speech>hello</speech><plan>p</plan><speech> world</speech>"
     expected = "hello world"
     for cut in range(len(src) + 1):
 
@@ -107,9 +107,9 @@ def feed_all(s: str, split: str = "|") -> list[tuple[str, str]]:
 
 
 def test_llm_tag_printer_all_four_tag_types():
-    src = "<reasoning>r1</reasoning><plan>[{}]</plan><speech>hi</speech><exec>{}</exec>"
+    src = "<think>r1</think><plan>[{}]</plan><speech>hi</speech><exec>{}</exec>"
     assert feed_all(src) == [
-        ("reasoning", "r1"),
+        ("think", "r1"),
         ("plan", "[{}]"),
         ("speech", "hi"),
         ("exec", "{}"),
@@ -122,7 +122,7 @@ def test_llm_tag_printer_action_result_tag():
 
 
 def test_llm_tag_printer_split_across_feeds_open():
-    assert feed_all("<reas|oning>|abc|</reasoning>") == [("reasoning", "abc")]
+    assert feed_all("<reas|oning>|abc|</think>") == [("think", "abc")]
 
 
 def test_llm_tag_printer_split_across_feeds_close():
@@ -145,7 +145,7 @@ def test_llm_tag_printer_empty_body_not_yielded():
 
 def test_llm_tag_printer_unclosed_tag_discarded_on_flush():
     p = LLMTagPrinter()
-    assert p.feed("<reasoning>partial") == []
+    assert p.feed("<think>partial") == []
     assert p.flush() == []
 
 
@@ -155,12 +155,12 @@ def test_llm_tag_printer_literal_lt_inside_tag_preserved():
 
 def test_llm_tag_printer_all_split_points_stable():
     src = (
-        "<reasoning>r</reasoning>"
+        "<think>r</think>"
         "<speech>hi</speech>"
         "<plan>p</plan>"
         "<exec>e</exec>"
     )
-    expected = [("reasoning", "r"), ("speech", "hi"), ("plan", "p"), ("exec", "e")]
+    expected = [("think", "r"), ("speech", "hi"), ("plan", "p"), ("exec", "e")]
     for cut in range(len(src) + 1):
         p = LLMTagPrinter()
         got = p.feed(src[:cut]) + p.feed(src[cut:]) + p.flush()
