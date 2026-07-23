@@ -311,12 +311,17 @@ def _render_action_signatures(actions: tuple[ActionDef, ...]) -> str:
 
 
 def _render_domestic_robot_grammar(
-    actions: tuple[ActionDef, ...], objects: tuple[str, ...] | None = None
+    actions: tuple[ActionDef, ...],
+    objects: tuple[str, ...] | None = None,
+    rooms: tuple[str, ...] | None = None,
+    surfaces: tuple[str, ...] | None = None,
 ) -> str:
     """Generate a GBNF grammar enforcing the domestic robot output format.
 
-    Top-level shape: think [plan] speech [exec], with the constraint that
-    plan present implies exec present. Each action is a strict per-name rule
+    Top-level shape: think [plan] speech [exec], with the constraints that
+    plan present implies exec present, and a response may be speech-only (no
+    action) so greetings/acknowledgements aren't forced to emit an <exec>.
+    Each action is a strict per-name rule
     derived from ACTIONS, emitting ``{"name": ..., "parameters": {...}, "output": ...}``.
     The ``output`` value is a fixed literal per action: the bound variable name,
     or JSON ``null`` for actions that return nothing.
@@ -325,7 +330,9 @@ def _render_domestic_robot_grammar(
     action_alt = " | ".join(action_rule_names)
 
     lines: list[str] = []
-    lines.append("root ::= think speech exec | think plan speech exec")
+    lines.append(
+        "root ::= think speech | think speech exec | think plan speech exec"
+    )
     lines.append("")
     lines.append('think ::= "<think>" inner-text "</think>"')
     lines.append('speech    ::= "<speech>" inner-text "</speech>"')
@@ -364,7 +371,7 @@ def _render_domestic_robot_grammar(
         lines.append(f"{rule_name} ::= " + " ".join(parts))
 
     # Emit a named rule for each choice set referenced by an arg, in first-use order.
-    sets = choice_sets(objects)
+    sets = choice_sets(objects, rooms, surfaces)
     used_choices: list[str] = []
     for a in actions:
         for arg in a.args:
@@ -384,11 +391,20 @@ def _render_domestic_robot_grammar(
     return "\n".join(lines) + "\n"
 
 
-def _render_known_locations() -> str:
-    """Render the KNOWN LOCATIONS prompt block from the location macros."""
+def _render_known_locations(
+    rooms: tuple[str, ...] | None = None,
+    surfaces: tuple[str, ...] | None = None,
+) -> str:
+    """Render the KNOWN LOCATIONS prompt block.
+
+    ``rooms``/``surfaces`` override the static vocabulary with the backend's
+    actual world; when None the static tuples are used.
+    """
+    rooms = rooms if rooms is not None else ROOMS
+    surfaces = surfaces if surfaces is not None else SURFACES
     return (
-        f"Rooms: {', '.join(ROOMS)}\n"
-        f"Surfaces: {', '.join(SURFACES)}\n"
+        f"Rooms: {', '.join(rooms)}\n"
+        f"Surfaces: {', '.join(surfaces)}\n"
         'For "move"/"guide" destinations and "find_object"/"find_person" locations, '
         "use any room or surface.\n"
         'For "place" the destination must be one of the surfaces.'
@@ -403,6 +419,19 @@ def _render_known_objects(objects: tuple[str, ...], is_sim: bool) -> str:
         f'These are the only object names you may use in "find_object" '
         f"({which} set). Map what the user says to the closest one.\n{names}"
     )
+
+
+# Actions that require a human and so can't run in the AI2-THOR simulator (no
+# people in the scene). Mirrors the backend's UNSUPPORTED_ACTIONS, so in sim the
+# planner is never even offered an action it would only fail on.
+_PERSON_ACTIONS = frozenset({"find_person", "guide", "follow", "deliver"})
+
+
+def _actions_for(object_set: str | None) -> tuple[ActionDef, ...]:
+    """The actions the planner may use: person actions are dropped in the sim."""
+    if is_simulator_set(object_set):
+        return tuple(a for a in ACTIONS if a.name not in _PERSON_ACTIONS)
+    return ACTIONS
 
 
 _ROBOT_PLANNER_ACTIONS = _render_action_signatures(ACTIONS)
@@ -526,6 +555,9 @@ If the action failed, replan or ask for help.
 3. Thinking: This is very important. You should reason on every response what you should do. Also if no plan is needed then you should reason this, only producing speech tags.
 4. Do not plan more than once per user request unless the user explicitly asks you to re-plan.
 5. If an action fails more than twice in a row, ask the user for help instead of replanning indefinitely.
+6. Emit exactly ONE <exec> per response, then STOP and wait for its <action_result> before emitting the next <exec>. Do not emit the next action until the previous one's result arrives.
+7. Never claim or imply an action has succeeded (e.g. "I found it", "I've picked it up", "here you go") before you have received its <action_result>. While waiting on a result, do not re-issue the same action.
+8. When the user asks you to perform a physical task, act IN THE SAME RESPONSE: output a <plan> and the first <exec>. Do NOT merely acknowledge ("Of course, I'll get it") and wait -- a reply with speech but no <exec> leaves you idle until the next event. Reserve speech-only replies (no <plan>, no <exec>) for greetings, small talk, clarifying questions when the request is genuinely ambiguous, or when no physical action is needed.
 
 # TRANSCRIPTION ERRORS
 There might be some mistakes in the transcript of the user's speech.
@@ -847,13 +879,35 @@ class DomesticRobotInstructions(BaseModel):
     # The local bridge client sets this from ACTION_SIMULATOR; None falls back to the
     # backend's own ACTION_SIMULATOR env var.
     object_set: Literal["sim", "real"] | None = None
+    # The backend's actual world, forwarded by the bridge via session.update. When
+    # set, the planner's place vocabulary (prompt + grammar) is scoped to these
+    # instead of the static robot_world tuples, so it can only name places that
+    # really exist in the loaded scene. None -> fall back to the static vocabulary.
+    rooms: list[str] | None = None
+    surfaces: list[str] | None = None
+
+    def _places(self) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
+        rooms = tuple(self.rooms) if self.rooms else None
+        surfaces = tuple(self.surfaces) if self.surfaces else None
+        return rooms, surfaces
 
     def make_system_prompt(self) -> str:
         objects = objects_for(self.object_set)
         is_sim = is_simulator_set(self.object_set)
+        rooms, surfaces = self._places()
+        known_locations = (
+            _render_known_locations(rooms, surfaces)
+            if (rooms or surfaces)
+            else _ROBOT_KNOWN_LOCATIONS
+        )
+        available_actions = (
+            _render_action_signatures(_actions_for(self.object_set))
+            if is_sim
+            else _ROBOT_PLANNER_ACTIONS
+        )
         prompt = _DOMESTIC_ROBOT_PROMPT_TEMPLATE
-        prompt = prompt.replace("{available_actions}", _ROBOT_PLANNER_ACTIONS)
-        prompt = prompt.replace("{known_locations}", _ROBOT_KNOWN_LOCATIONS)
+        prompt = prompt.replace("{available_actions}", available_actions)
+        prompt = prompt.replace("{known_locations}", known_locations)
         prompt = prompt.replace(
             "{known_objects}", _render_known_objects(objects, is_sim)
         )
@@ -865,7 +919,10 @@ class DomesticRobotInstructions(BaseModel):
     def make_guided_grammar(self) -> str | None:
         if os.environ.get("UNMUTE_GUIDED_DECODING", "1") == "0":
             return None
-        return _render_domestic_robot_grammar(ACTIONS, objects_for(self.object_set))
+        rooms, surfaces = self._places()
+        return _render_domestic_robot_grammar(
+            _actions_for(self.object_set), objects_for(self.object_set), rooms, surfaces
+        )
 
 
 Instructions = Annotated[

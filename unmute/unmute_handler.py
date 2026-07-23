@@ -56,6 +56,12 @@ AUDIO_INPUT_OVERRIDE: Path | None = None
 DEBUG_PLOT_HISTORY_SEC = 10.0
 
 USER_SILENCE_TIMEOUT = 7.0
+# While the robot is executing an <exec> action, user silence is expected (it's busy,
+# not idle), so we suppress the silence-driven turn until the <action_result> comes back.
+# This is a safety backstop: if no result arrives within this long, give up waiting and
+# let the silence timer run again, so a dropped result can't mute the robot forever.
+# Must comfortably exceed the slowest action (a full-room find_object is ~3 min).
+PENDING_ACTION_MAX_WAIT = 240.0
 FIRST_MESSAGE_TEMPERATURE = 0.7
 FURTHER_MESSAGES_TEMPERATURE = 0.3
 # For this much time, the VAD does not interrupt the bot. This is needed because at
@@ -103,6 +109,14 @@ class UnmuteHandler(AsyncStreamHandler):
         self.openai_client = get_openai_client()
 
         self.turn_transition_lock = asyncio.Lock()
+
+        # True between emitting an <exec> and receiving its <action_result>. While set,
+        # detect_long_silence() does not poke the LLM, so the robot stays quiet during a
+        # long action instead of re-planning on every 7 s silence tick. Cleared by any
+        # real user turn (speech or action_result) and by the PENDING_ACTION_MAX_WAIT
+        # backstop. Real speech-driven turns are unaffected.
+        self.pending_action = False
+        self.pending_action_start_time: float = 0.0
 
         self.debug_dict: dict[str, Any] = {
             "timing": {},
@@ -169,11 +183,33 @@ class UnmuteHandler(AsyncStreamHandler):
         role: Literal["user", "assistant"],
         generating_message_i: int | None = None,  # Avoid race conditions
     ):
+        # A real user turn (transcribed speech, or an injected <action_result>) means the
+        # robot is no longer waiting blind on the in-flight action, so lift the silence
+        # gate. Skip the "..." silence marker (only fires when the gate is already down)
+        # AND empty/whitespace deltas -- the VAD/STT injects empty "" user deltas on every
+        # interruption (line ~412/630), and in browser mode mic noise / TTS bleed triggers
+        # those spuriously; letting them clear the gate drops it mid-action and lets a
+        # silence poke fire while the robot is still busy.
+        if role == "user" and delta.strip() and delta != USER_SILENCE_MARKER:
+            self._clear_pending_action("user turn")
+
         is_new_message = await self.chatbot.add_chat_message_delta(
             delta, role, generating_message_i=generating_message_i
         )
 
         return is_new_message
+
+    def _note_action_dispatched(self, full_text: str) -> None:
+        """If the just-completed response emitted an <exec>, raise the silence gate."""
+        if "<exec>" in full_text:
+            self.pending_action = True
+            self.pending_action_start_time = self.audio_received_sec()
+            logger.info("Action dispatched; suppressing silence timer until result.")
+
+    def _clear_pending_action(self, reason: str) -> None:
+        if self.pending_action:
+            logger.info("Lifting silence gate (%s).", reason)
+        self.pending_action = False
 
     async def _generate_response(self):
         # Empty message to signal we've started responding.
@@ -267,10 +303,12 @@ class UnmuteHandler(AsyncStreamHandler):
                 assert isinstance(word, str)  # make Pyright happy
                 await tts.send(word)
 
+            full_text = "".join(response_words)
             await self.output_queue.put(
                 # The words include the whitespace, so no need to add it here
-                ora.ResponseTextDone(text="".join(response_words))
+                ora.ResponseTextDone(text=full_text)
             )
+            self._note_action_dispatched(full_text)
 
             if tts is not None:
                 logger.info("Sending TTS EOS.")
@@ -643,6 +681,15 @@ class UnmuteHandler(AsyncStreamHandler):
 
     async def detect_long_silence(self):
         """Handle situations where the user doesn't answer for a while."""
+        if self.pending_action:
+            # The robot is mid-action; silence is expected. Keep waiting for the
+            # <action_result>, unless we've been waiting absurdly long (backstop).
+            if (
+                self.audio_received_sec() - self.pending_action_start_time
+            ) < PENDING_ACTION_MAX_WAIT:
+                return
+            self._clear_pending_action("max wait exceeded")
+
         if (
             self.chatbot.conversation_state() == "waiting_for_user"
             and (self.audio_received_sec() - self.waiting_for_user_start_time)

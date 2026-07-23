@@ -186,15 +186,23 @@ def objects_for(object_set: str | None) -> tuple[str, ...]:
     return AI2THOR_OBJECTS if is_simulator_set(object_set) else REAL_OBJECTS
 
 
-def choice_sets(objects: tuple[str, ...] | None = None) -> dict[str, tuple[str, ...]]:
+def choice_sets(
+    objects: tuple[str, ...] | None = None,
+    rooms: tuple[str, ...] | None = None,
+    surfaces: tuple[str, ...] | None = None,
+) -> dict[str, tuple[str, ...]]:
     """Named choice sets the grammar can pin an arg to (see ActionArg.choices).
 
     ``objects`` overrides the object set; when None it falls back to the
-    ACTION_SIMULATOR env-var default.
+    ACTION_SIMULATOR env-var default. ``rooms``/``surfaces`` override the static
+    location vocabulary with the backend's actual world (see DomesticRobot
+    ``rooms``/``surfaces``); when None the static tuples are used.
     """
+    rooms = rooms if rooms is not None else ROOMS
+    surfaces = surfaces if surfaces is not None else SURFACES
     return {
-        "rooms": ROOMS,
-        "surfaces": SURFACES,
-        "places": PLACES,
+        "rooms": rooms,
+        "surfaces": surfaces,
+        "places": tuple(rooms) + tuple(surfaces),
         "objects": objects if objects is not None else active_objects(),
     }

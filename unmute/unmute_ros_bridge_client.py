@@ -29,6 +29,11 @@ ALLOW_RECORDING = os.environ.get("ALLOW_RECORDING", "false").lower() == "true"
 # Read locally and forwarded to the (possibly remote) backend via session.update,
 # since the backend can't see this client's environment.
 ACTION_SIMULATOR = os.environ.get("ACTION_SIMULATOR", "false").lower() == "true"
+# Rooms/surfaces of the backend's actual world, announced over :8090 via
+# robot.world_vocab. Used to scope the domestic-robot planner to places that
+# really exist. None until the backend reports it (it loads after we connect),
+# so we re-send session.update once it arrives.
+_latest_world_vocab: dict | None = None
 RECONNECT_DELAY_SEC = float(os.environ.get("RECONNECT_DELAY_SEC", "3.0"))
 PRINT_TEXT_DELTAS = os.environ.get("PRINT_TEXT_DELTAS", "false").lower() == "true"
 DEBUG_MIC_INPUT = os.environ.get("DEBUG_MIC_INPUT", "false").lower() == "true"
@@ -232,6 +237,11 @@ async def _send_initial_session_update(unmute_ws: websockets.ClientConnection) -
         # (simulator vs real life) based on our local ACTION_SIMULATOR flag.
         if resolved_instructions.get("type") == "domestic_robot":
             resolved_instructions["object_set"] = "sim" if ACTION_SIMULATOR else "real"
+            # Scope the planner's place vocabulary to the backend's real world,
+            # once it has told us what that is.
+            if _latest_world_vocab is not None:
+                resolved_instructions["rooms"] = _latest_world_vocab.get("rooms")
+                resolved_instructions["surfaces"] = _latest_world_vocab.get("surfaces")
         session["instructions"] = resolved_instructions
 
     payload = {
@@ -378,6 +388,25 @@ async def run_bridge() -> None:
                                         reason,
                                     )
                                     await _flush_action_results()
+                                    continue
+
+                                if msg_type == "robot.world_vocab":
+                                    global _latest_world_vocab
+                                    new_vocab = {
+                                        "rooms": data.get("rooms") or [],
+                                        "surfaces": data.get("surfaces") or [],
+                                    }
+                                    if new_vocab != _latest_world_vocab:
+                                        _latest_world_vocab = new_vocab
+                                        logger.info(
+                                            "World vocab updated (rooms=%s, surfaces=%s); "
+                                            "re-sending session.update.",
+                                            new_vocab["rooms"],
+                                            new_vocab["surfaces"],
+                                        )
+                                        # The backend loads after we connect, so the
+                                        # initial session had the static vocab; refresh it.
+                                        await _send_initial_session_update(unmute_ws)
                                     continue
 
                                 if msg_type == "bridge.action_result":
