@@ -81,3 +81,12 @@
     source_type: file
     path_on_server: unmute-prod-website/fabieng-enhanced-v2.wav
     description: Fabieng is voice acted by Neil Zeghidour from Kyutai.
+- name: Home Robot
+  good: true
+  instructions:
+    type: domestic_robot
+    language: en
+  source:
+    source_type: file
+    path_on_server: voice-donations/Lake_enhanced.wav
+    description: Home robot.

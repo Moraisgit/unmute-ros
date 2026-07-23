@@ -15,7 +15,8 @@ import UnmuteConfigurator, {
 import CouldNotConnect, { HealthStatus } from "./CouldNotConnect";
 import UnmuteHeader from "./UnmuteHeader";
 import Subtitles from "./Subtitles";
-import { ChatMessage, compressChatHistory } from "./chatHistory";
+import ConversationLog from "./ConversationLog";
+import { ChatMessage, ChatRole, compressChatHistory } from "./chatHistory";
 import useWakeLock from "./useWakeLock";
 import ErrorMessages, { ErrorItem, makeErrorItem } from "./ErrorMessages";
 import { useRecordingCanvas } from "./useRecordingCanvas";
@@ -25,6 +26,15 @@ import { useBackendServerUrl } from "./useBackendServerUrl";
 import { RECORDING_CONSENT_STORAGE_KEY } from "./ConsentModal";
 
 const Unmute = () => {
+  const monitorAutoConnect = ["1", "true", "yes"].includes(
+    (process.env.NEXT_PUBLIC_MONITOR_AUTO_CONNECT || "").toLowerCase(),
+  );
+  // When true: browser captures mic (with getUserMedia AEC) and plays TTS.
+  // When false: ROS mic/speaker path is authoritative; browser is a pure
+  // text-only monitor (no mic capture, no audio playback).
+  const useBrowserMic = ["1", "true", "yes"].includes(
+    (process.env.NEXT_PUBLIC_USE_BROWSER_MIC || "1").toLowerCase(),
+  );
   const { isDevMode, showSubtitles } = useKeyboardShortcuts();
   const [debugDict, setDebugDict] = useState<object | null>(null);
   const [unmuteConfig, setUnmuteConfig] = useState<UnmuteConfig>(
@@ -36,6 +46,8 @@ const Unmute = () => {
   const { microphoneAccess, askMicrophoneAccess } = useMicrophoneAccess();
 
   const [shouldConnect, setShouldConnect] = useState(false);
+  const [manualDisconnect, setManualDisconnect] = useState(false);
+  const [pendingFreshSession, setPendingFreshSession] = useState(false);
   const backendServerUrl = useBackendServerUrl();
   const [webSocketUrl, setWebSocketUrl] = useState<string | null>(null);
   const [healthStatus, setHealthStatus] = useState<HealthStatus | null>(null);
@@ -125,13 +137,40 @@ const Unmute = () => {
   const onConnectButtonPress = async () => {
     // If we're not connected yet
     if (!shouldConnect) {
+      if (!useBrowserMic) {
+        // ROS mode: no mic capture, no browser audio playback. Just connect.
+        if (monitorAutoConnect) {
+          setManualDisconnect(false);
+        }
+        setShouldConnect(true);
+        return;
+      }
+
       const mediaStream = await askMicrophoneAccess();
       // If we have access to the microphone:
       if (mediaStream) {
         await setupAudio(mediaStream);
+        if (monitorAutoConnect) {
+          setManualDisconnect(false);
+        }
         setShouldConnect(true);
       }
     } else {
+      if (readyState === ReadyState.OPEN) {
+        sendMessage(
+          JSON.stringify({
+            type: "bridge.pause_session",
+            reason: "ui_disconnect_pause",
+          }),
+          true,
+        );
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+      setPendingFreshSession(true);
+      setRawChatHistory([]);
+      if (monitorAutoConnect) {
+        setManualDisconnect(true);
+      }
       setShouldConnect(false);
       shutdownAudio();
     }
@@ -156,6 +195,116 @@ const Unmute = () => {
     }
   }, [readyState, shutdownAudio]);
 
+  // Monitor mode: connect automatically once backend health is available.
+  useEffect(() => {
+    if (!monitorAutoConnect || !backendServerUrl) return;
+    if (manualDisconnect) return;
+    if (shouldConnect) return;
+
+    let cancelled = false;
+    let connecting = false;
+
+    const connectWithMic = async () => {
+      if (cancelled || connecting) return;
+      connecting = true;
+
+      try {
+        if (!useBrowserMic) {
+          // ROS mode: skip mic setup; browser is a pure text-only monitor.
+          setShouldConnect(true);
+          return;
+        }
+        // Browser mic capture needs permission; relies on the browser having
+        // persisted the grant for this origin. First-visit auto-connect may
+        // silently no-op until the user clicks Connect.
+        const mediaStream = await askMicrophoneAccess();
+        if (cancelled || !mediaStream) return;
+        await setupAudio(mediaStream);
+        if (cancelled) return;
+        setShouldConnect(true);
+      } catch (error) {
+        cancelled = true;
+        console.error("Monitor auto-connect failed", error);
+      } finally {
+        connecting = false;
+      }
+    };
+
+    if (healthStatus?.ok) {
+      void connectWithMic();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const pollHealth = async () => {
+      try {
+        const response = await fetch(
+          new URL(
+            "v1/health",
+            backendServerUrl.endsWith("/")
+              ? backendServerUrl
+              : backendServerUrl + "/",
+          ).toString(),
+          { cache: "no-store" },
+        );
+        if (!response.ok) return;
+
+        const polledHealthStatus = (await response.json()) as HealthStatus;
+        if (!cancelled && polledHealthStatus.ok) {
+          void connectWithMic();
+        }
+      } catch {
+        // Keep polling while monitor auto-connect is enabled.
+      }
+    };
+
+    void pollHealth();
+    const intervalId = window.setInterval(() => {
+      void pollHealth();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    monitorAutoConnect,
+    useBrowserMic,
+    backendServerUrl,
+    healthStatus?.ok,
+    manualDisconnect,
+    shouldConnect,
+    askMicrophoneAccess,
+    setupAudio,
+  ]);
+
+  // After a manual pause disconnect, resume bridge forwarding and force a
+  // fresh session on the next successful connection.
+  useEffect(() => {
+    if (!pendingFreshSession) return;
+    if (!shouldConnect || readyState !== ReadyState.OPEN) return;
+
+    sendMessage(
+      JSON.stringify({
+        type: "bridge.resume_session",
+        reason: "ui_connect_resume",
+      }),
+    );
+    sendMessage(
+      JSON.stringify({
+        type: "bridge.reset_session",
+        reason: "ui_connect_fresh_session",
+      }),
+    );
+    setRawChatHistory([]);
+    setPendingFreshSession(false);
+  }, [
+    pendingFreshSession,
+    readyState,
+    sendMessage,
+    shouldConnect,
+  ]);
   // Handle incoming messages from the server
   useEffect(() => {
     if (lastMessage === null) return;
@@ -200,6 +349,29 @@ const Unmute = () => {
         // but whatever.
         { role: "assistant", content: " " + data.delta },
       ]);
+    } else if (data.type === "unmute.llm_raw_delta") {
+      if (typeof data.delta === "string" && data.delta.length > 0) {
+        setRawChatHistory((prev) => [
+          ...prev,
+          { role: "llm_raw", content: data.delta },
+        ]);
+      }
+    } else if (data.type === "unmute.llm_tag_block") {
+      const tagName =
+        typeof data.tag_name === "string" ? data.tag_name : "";
+      const content =
+        typeof data.content === "string" ? data.content : "";
+      const roleMap: Record<string, ChatRole> = {
+        think: "llm_think",
+        plan: "llm_plan",
+        speech: "llm_speech",
+        exec: "llm_exec",
+        action_result: "llm_action_result",
+      };
+      const role = roleMap[tagName];
+      if (role && content.length > 0) {
+        setRawChatHistory((prev) => [...prev, { role, content }]);
+      }
     } else {
       const ignoredTypes = [
         "session.updated",
@@ -213,6 +385,8 @@ const Unmute = () => {
         "unmute.interrupted_by_vad",
         "unmute.response.text.delta.ready",
         "unmute.response.audio.delta.ready",
+        "unmute.llm_raw_delta",
+        "unmute.llm_tag_block",
       ];
       if (!ignoredTypes.includes(data.type)) {
         console.warn("Received unknown message:", data);
@@ -244,9 +418,17 @@ const Unmute = () => {
   // Disconnect when the voice or instruction changes.
   // TODO: If it's a voice change, immediately reconnect with the new voice.
   useEffect(() => {
+    if (monitorAutoConnect) {
+      return;
+    }
     setShouldConnect(false);
     shutdownAudio();
-  }, [shutdownAudio, unmuteConfig.voice, unmuteConfig.instructions]);
+  }, [
+    monitorAutoConnect,
+    shutdownAudio,
+    unmuteConfig.voice,
+    unmuteConfig.instructions,
+  ]);
 
   if (!healthStatus || !backendServerUrl) {
     return (
@@ -291,6 +473,7 @@ const Unmute = () => {
           />
         </div>
         {showSubtitles && <Subtitles chatHistory={chatHistory} />}
+        <ConversationLog chatHistory={chatHistory} />
         <UnmuteConfigurator
           backendServerUrl={backendServerUrl}
           config={unmuteConfig}
@@ -298,13 +481,15 @@ const Unmute = () => {
           voiceCloningUp={healthStatus.voice_cloning_up || false}
         />
         <div className="w-full flex flex-col-reverse md:flex-row items-center justify-center px-3 gap-3 my-6">
-          <SlantedButton
-            onClick={onDownloadRecordingButtonPress}
-            kind={recordingAvailable ? "secondary" : "disabled"}
-            extraClasses="w-full max-w-96"
-          >
-            {"download recording"}
-          </SlantedButton>
+          {!monitorAutoConnect && (
+            <SlantedButton
+              onClick={onDownloadRecordingButtonPress}
+              kind={recordingAvailable ? "secondary" : "disabled"}
+              extraClasses="w-full max-w-96"
+            >
+              {"download recording"}
+            </SlantedButton>
+          )}
           <SlantedButton
             onClick={onConnectButtonPress}
             kind={shouldConnect ? "secondary" : "primary"}
@@ -314,7 +499,7 @@ const Unmute = () => {
           </SlantedButton>
           {/* Maybe we don't need to explicitly show the status */}
           {/* {renderConnectionStatus(readyState, false)} */}
-          {microphoneAccess === "refused" && (
+          {!monitorAutoConnect && microphoneAccess === "refused" && (
             <div className="text-red">
               {"You'll need to allow microphone access to use the demo. " +
                 "Please check your browser settings."}

@@ -82,6 +82,17 @@ class InputAudioBufferAppend(BaseEvent[Literal["input_audio_buffer.append"]]):
     audio: str  # Base64-encoded Opus data
 
 
+class InputAudioBufferAppendPcm(BaseEvent[Literal["unmute.input_audio_buffer.append_pcm"]]):
+    """Custom event to accept raw PCM data (float32 or int16) directly."""
+    audio: str # Base64-encoded raw bytes
+    format: Literal["float32", "int16"] = "int16" # Default to what standard mics provide
+
+
+class UnmuteUserMessage(BaseEvent[Literal["unmute.user_message"]]):
+    """Custom event to inject a user message into the chat history."""
+    content: str
+    
+
 class UnmuteInputAudioBufferAppendAnonymized(
     BaseEvent[Literal["unmute.input_audio_buffer.append_anonymized"]]
 ):
@@ -195,6 +206,8 @@ ServerEvent = Union[
 ClientEvent = Union[
     SessionUpdate,
     InputAudioBufferAppend,
+    InputAudioBufferAppendPcm,
+    UnmuteUserMessage,
     # Used internally for recording, we're not expecting the user to send this
     UnmuteInputAudioBufferAppendAnonymized,
 ]
