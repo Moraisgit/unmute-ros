@@ -16,9 +16,7 @@ from unmute.llm.unmute_tag_parser import LLMTagPrinter
 # Example tunnel:
 #   ssh -N -L 3333:localhost:80 <remote-host>
 LAPTOP_WS_URL = os.environ.get("LAPTOP_WS_URL", "ws://127.0.0.1:8090")
-UNMUTE_WS_URL = os.environ.get(
-    "UNMUTE_WS_URL", "ws://127.0.0.1:3333/api/v1/realtime"
-)
+UNMUTE_WS_URL = os.environ.get("UNMUTE_WS_URL", "ws://127.0.0.1:3333/api/v1/realtime")
 PCM_FORMAT = os.environ.get("PCM_FORMAT", "int16")
 INPUT_SAMPLE_RATE = int(os.environ.get("INPUT_SAMPLE_RATE", "24000"))
 UNMUTE_SAMPLE_RATE = int(os.environ.get("UNMUTE_SAMPLE_RATE", "24000"))
@@ -45,12 +43,8 @@ PRINT_USER_TRANSCRIPT_DELTAS = (
 DEBUG_LLM_OUTPUT_TAGS = (
     os.environ.get("DEBUG_LLM_OUTPUT_TAGS", "false").lower() == "true"
 )
-DEBUG_LLM_RAW_OUTPUT = (
-    os.environ.get("DEBUG_LLM_RAW_OUTPUT", "false").lower() == "true"
-)
-ACTION_RESULT_QUEUE_MAXSIZE = int(
-    os.environ.get("ACTION_RESULT_QUEUE_MAXSIZE", "64")
-)
+DEBUG_LLM_RAW_OUTPUT = os.environ.get("DEBUG_LLM_RAW_OUTPUT", "false").lower() == "true"
+ACTION_RESULT_QUEUE_MAXSIZE = int(os.environ.get("ACTION_RESULT_QUEUE_MAXSIZE", "64"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -242,6 +236,11 @@ async def _send_initial_session_update(unmute_ws: websockets.ClientConnection) -
             if _latest_world_vocab is not None:
                 resolved_instructions["rooms"] = _latest_world_vocab.get("rooms")
                 resolved_instructions["surfaces"] = _latest_world_vocab.get("surfaces")
+                # Nested rooms->surfaces map drives the prompt's # ENVIRONMENT
+                # section; the flat lists above still scope the grammar.
+                semantic_map = _latest_world_vocab.get("semantic_map")
+                if semantic_map is not None:
+                    resolved_instructions["semantic_map"] = semantic_map
         session["instructions"] = resolved_instructions
 
     payload = {
@@ -362,7 +361,9 @@ async def run_bridge() -> None:
                                 if msg_type == "bridge.reset_session":
                                     source = data.get("source", "unknown")
                                     reason = data.get("reason", "unspecified")
-                                    raise SessionResetRequested(source=source, reason=reason)
+                                    raise SessionResetRequested(
+                                        source=source, reason=reason
+                                    )
 
                                 if msg_type == "bridge.pause_session":
                                     source = data.get("source", "unknown")
@@ -395,6 +396,7 @@ async def run_bridge() -> None:
                                     new_vocab = {
                                         "rooms": data.get("rooms") or [],
                                         "surfaces": data.get("surfaces") or [],
+                                        "semantic_map": data.get("semantic_map"),
                                     }
                                     if new_vocab != _latest_world_vocab:
                                         _latest_world_vocab = new_vocab
@@ -436,7 +438,9 @@ async def run_bridge() -> None:
                                                 "audio": audio_b64,
                                             }
                                         )
-                                    except websockets.exceptions.ConnectionClosed as exc:
+                                    except (
+                                        websockets.exceptions.ConnectionClosed
+                                    ) as exc:
                                         logger.info(
                                             "Unmute websocket closed while forwarding browser audio; reconnecting: %s",
                                             exc,
@@ -456,11 +460,15 @@ async def run_bridge() -> None:
                                     outgoing_audio_b64 = data["data"]
                                     outgoing_format = PCM_FORMAT
 
-                                    mic_audio_f32 = _to_float32_pcm(data["data"], PCM_FORMAT)
+                                    mic_audio_f32 = _to_float32_pcm(
+                                        data["data"], PCM_FORMAT
+                                    )
 
                                     if (
                                         DEBUG_MIC_INPUT
-                                        and packet_count % max(1, DEBUG_MIC_EVERY_N_PACKETS) == 0
+                                        and packet_count
+                                        % max(1, DEBUG_MIC_EVERY_N_PACKETS)
+                                        == 0
                                     ):
                                         rms, peak = _audio_level_stats(mic_audio_f32)
                                         logger.info(
@@ -475,13 +483,18 @@ async def run_bridge() -> None:
                                             PCM_FORMAT,
                                         )
 
-                                    if RESAMPLE_AUDIO and INPUT_SAMPLE_RATE != UNMUTE_SAMPLE_RATE:
+                                    if (
+                                        RESAMPLE_AUDIO
+                                        and INPUT_SAMPLE_RATE != UNMUTE_SAMPLE_RATE
+                                    ):
                                         resampled = _resample_linear(
                                             mic_audio_f32,
                                             src_rate=INPUT_SAMPLE_RATE,
                                             dst_rate=UNMUTE_SAMPLE_RATE,
                                         )
-                                        outgoing_audio_b64 = _encode_float32_b64(resampled)
+                                        outgoing_audio_b64 = _encode_float32_b64(
+                                            resampled
+                                        )
                                         outgoing_format = "float32"
 
                                     unmute_msg = {
@@ -497,7 +510,9 @@ async def run_bridge() -> None:
                                     )
                                     raise
                                 except Exception as exc:
-                                    logger.error("Error forwarding audio to Unmute: %s", exc)
+                                    logger.error(
+                                        "Error forwarding audio to Unmute: %s", exc
+                                    )
 
                         async def forward_response_to_laptop() -> None:
                             nonlocal paused_session
@@ -524,7 +539,9 @@ async def run_bridge() -> None:
                             # than interleaved with it.
                             pending_tag_blocks: list[tuple[str, str]] = []
 
-                            def _print_stream_chunk(speaker: str, label: str, text: str) -> None:
+                            def _print_stream_chunk(
+                                speaker: str, label: str, text: str
+                            ) -> None:
                                 nonlocal active_stream_speaker
                                 if not text:
                                     return
@@ -533,7 +550,9 @@ async def run_bridge() -> None:
                                         print("", flush=True)
                                     print(f"{label} ", end="", flush=True)
                                     active_stream_speaker = speaker
-                                if _needs_boundary_space(last_char_by_speaker[speaker], text):
+                                if _needs_boundary_space(
+                                    last_char_by_speaker[speaker], text
+                                ):
                                     print(" ", end="", flush=True)
                                 print(text, end="", flush=True)
                                 last_char_by_speaker[speaker] = text[-1]
@@ -548,7 +567,10 @@ async def run_bridge() -> None:
                                 if tag_printer is not None:
                                     tag_printer.flush()
                                 for key in list(last_char_by_speaker):
-                                    if key.startswith("llm_tag_") or key == "llm_raw_output":
+                                    if (
+                                        key.startswith("llm_tag_")
+                                        or key == "llm_raw_output"
+                                    ):
                                         last_char_by_speaker[key] = None
 
                             async for message in unmute_ws:
@@ -564,10 +586,16 @@ async def run_bridge() -> None:
                                             pending_tag_blocks.clear()
                                             if tag_printer is not None:
                                                 tag_printer.flush()
-                                        elif msg_type == "conversation.item.input_audio_transcription.completed":
+                                        elif (
+                                            msg_type
+                                            == "conversation.item.input_audio_transcription.completed"
+                                        ):
                                             active_stream_speaker = None
                                             last_char_by_speaker["user"] = None
-                                        elif msg_type == "unmute.response.text.delta.ready":
+                                        elif (
+                                            msg_type
+                                            == "unmute.response.text.delta.ready"
+                                        ):
                                             pending_tag_blocks.clear()
                                             if tag_printer is not None:
                                                 tag_printer.flush()
@@ -581,7 +609,9 @@ async def run_bridge() -> None:
                                             "audio": data["delta"],
                                         }
                                         await laptop_ws.send(json.dumps(payload))
-                                    elif msg_type == "input_audio_buffer.speech_started":
+                                    elif (
+                                        msg_type == "input_audio_buffer.speech_started"
+                                    ):
                                         user_speaking = True
                                         _reset_tag_state("speech_started")
                                         if DEBUG_STT_EVENTS:
@@ -589,7 +619,9 @@ async def run_bridge() -> None:
                                         await laptop_ws.send(
                                             json.dumps({"type": "robot.speech_started"})
                                         )
-                                    elif msg_type == "input_audio_buffer.speech_stopped":
+                                    elif (
+                                        msg_type == "input_audio_buffer.speech_stopped"
+                                    ):
                                         user_speaking = False
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_stopped")
@@ -597,10 +629,15 @@ async def run_bridge() -> None:
                                             json.dumps({"type": "robot.speech_stopped"})
                                         )
                                         await _flush_action_results()
-                                    elif msg_type == "conversation.item.input_audio_transcription.delta":
+                                    elif (
+                                        msg_type
+                                        == "conversation.item.input_audio_transcription.delta"
+                                    ):
                                         delta = data.get("delta", "")
                                         if PRINT_USER_TRANSCRIPT_DELTAS and delta:
-                                            _print_stream_chunk("user", USER_LABEL, delta)
+                                            _print_stream_chunk(
+                                                "user", USER_LABEL, delta
+                                            )
                                         if delta:
                                             _reset_tag_state("user_transcript_delta")
                                             await laptop_ws.send(
@@ -618,7 +655,10 @@ async def run_bridge() -> None:
                                         text_delta = data.get("delta", "")
                                         if text_delta:
                                             text_deltas.append(text_delta)
-                                            if PRINT_TEXT_DELTAS and not DEBUG_LLM_OUTPUT_TAGS:
+                                            if (
+                                                PRINT_TEXT_DELTAS
+                                                and not DEBUG_LLM_OUTPUT_TAGS
+                                            ):
                                                 _print_stream_chunk(
                                                     "unmute", UNMUTE_LABEL, text_delta
                                                 )
@@ -636,7 +676,9 @@ async def run_bridge() -> None:
                                         if raw_delta:
                                             if DEBUG_LLM_RAW_OUTPUT:
                                                 _print_stream_chunk(
-                                                    "llm_raw_output", RAW_LLM_LABEL, raw_delta
+                                                    "llm_raw_output",
+                                                    RAW_LLM_LABEL,
+                                                    raw_delta,
                                                 )
                                                 await laptop_ws.send(
                                                     json.dumps(
@@ -658,8 +700,11 @@ async def run_bridge() -> None:
                                         if active_stream_speaker == "unmute" or (
                                             active_stream_speaker is not None
                                             and (
-                                                active_stream_speaker.startswith("llm_tag_")
-                                                or active_stream_speaker == "llm_raw_output"
+                                                active_stream_speaker.startswith(
+                                                    "llm_tag_"
+                                                )
+                                                or active_stream_speaker
+                                                == "llm_raw_output"
                                             )
                                         ):
                                             print("", flush=True)
@@ -672,7 +717,9 @@ async def run_bridge() -> None:
                                         # Now that the raw stream is done, flush the
                                         # accumulated parsed tag blocks in arrival order.
                                         for tag_name, content in pending_tag_blocks:
-                                            label = TAG_LABELS.get(tag_name, UNMUTE_LABEL)
+                                            label = TAG_LABELS.get(
+                                                tag_name, UNMUTE_LABEL
+                                            )
                                             _print_stream_chunk(
                                                 f"llm_tag_{tag_name}", label, content
                                             )
@@ -686,7 +733,10 @@ async def run_bridge() -> None:
                                                         }
                                                     )
                                                 )
-                                        if pending_tag_blocks and active_stream_speaker is not None:
+                                        if (
+                                            pending_tag_blocks
+                                            and active_stream_speaker is not None
+                                        ):
                                             print("", flush=True)
                                             active_stream_speaker = None
                                         pending_tag_blocks.clear()
@@ -695,11 +745,19 @@ async def run_bridge() -> None:
                                             tag_printer.flush()
                                             tag_printer = LLMTagPrinter()
                                         await laptop_ws.send(
-                                            json.dumps({"type": "robot.response_complete"})
+                                            json.dumps(
+                                                {"type": "robot.response_complete"}
+                                            )
                                         )
                                         await _flush_action_results()
-                                    elif msg_type == "conversation.item.input_audio_transcription.completed":
-                                        if PRINT_USER_TRANSCRIPT_DELTAS and active_stream_speaker == "user":
+                                    elif (
+                                        msg_type
+                                        == "conversation.item.input_audio_transcription.completed"
+                                    ):
+                                        if (
+                                            PRINT_USER_TRANSCRIPT_DELTAS
+                                            and active_stream_speaker == "user"
+                                        ):
                                             print("", flush=True)
                                             active_stream_speaker = None
                                         last_char_by_speaker["user"] = None
@@ -721,7 +779,9 @@ async def run_bridge() -> None:
                         for task in pending:
                             task.cancel()
 
-                        results = await asyncio.gather(*bridge_tasks, return_exceptions=True)
+                        results = await asyncio.gather(
+                            *bridge_tasks, return_exceptions=True
+                        )
 
                         reset_request: SessionResetRequested | None = None
                         unexpected_error: Exception | None = None
@@ -747,9 +807,11 @@ async def run_bridge() -> None:
                         if unexpected_error is not None:
                             raise unexpected_error
 
-                        logger.info("Unmute stream task completed; reconnecting websocket...")
+                        logger.info(
+                            "Unmute stream task completed; reconnecting websocket..."
+                        )
                         continue
-                        
+
                     logger.info("Unmute socket disconnected; reconnecting...")
 
         except Exception as exc:

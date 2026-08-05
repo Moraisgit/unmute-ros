@@ -11,10 +11,7 @@ from unmute.llm.llm_utils import autoselect_model
 from unmute.llm.newsapi import get_news
 from unmute.llm.quiz_show_questions import QUIZ_SHOW_QUESTIONS
 from unmute.llm.robot_world import (
-    ROOMS,
-    SURFACES,
     choice_sets,
-    is_simulator_set,
     objects_for,
 )
 
@@ -153,16 +150,35 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "Where the object should be found. Must be a known room or surface.",
                 choices="places",
             ),
-            ActionArg(
-                "find_objects",
-                "bool",
-                "If true, find all matching objects instead of just one.",
-                default="false",
-            ),
         ),
         output="found_object",
-        summary="Find an object in the scene. Set find_objects to true to find every matching object instead of a single one.",
-        output_desc="The unique ID of the found object (or a list of IDs when find_objects is true), usable in subsequent actions.",
+        summary="Find a single object in the scene.",
+        output_desc="The unique ID of the found object, usable in subsequent actions.",
+    ),
+    ActionDef(
+        name="find_objects",
+        args=(
+            ActionArg(
+                "object",
+                "str",
+                "The object to find. Must be one of the known object names.",
+                choices="objects",
+            ),
+            ActionArg(
+                "object_info",
+                "str",
+                "Additional description of the object (color, size, etc.). May be an empty string.",
+            ),
+            ActionArg(
+                "location",
+                "str",
+                "Where the objects should be found. Must be a known room or surface.",
+                choices="places",
+            ),
+        ),
+        output="found_objects",
+        summary="Find every matching object in the scene (the 'find all' variant of find_object).",
+        output_desc="A list of the unique IDs of the found objects, usable in subsequent actions.",
     ),
     ActionDef(
         name="pick",
@@ -207,21 +223,50 @@ ACTIONS: tuple[ActionDef, ...] = (
                 'The main identifier of the person (name, gender, age, or "person").',
             ),
             ActionArg(
+                "person_info",
+                "str",
+                "Additional description of the person: posture (waving, sitting, "
+                "standing, lying), gesture (e.g. raising their left/right arm, "
+                "pointing left/right), clothing colour, or clothing item. May be an "
+                "empty string.",
+            ),
+            ActionArg(
                 "location",
                 "str",
                 "Where to look for the person. Must be a known room or surface.",
                 choices="places",
             ),
-            ActionArg(
-                "find_people",
-                "bool",
-                "If true, find all matching people instead of just one.",
-                default="false",
-            ),
         ),
         output="found_person",
-        summary="Finds a person based on identifying features in a given location. Set find_people to true to find every matching person instead of a single one.",
-        output_desc="The unique ID of the found person (or a list of IDs when find_people is true), usable in subsequent actions.",
+        summary="Find a single person based on identifying features in a given location.",
+        output_desc="The unique ID of the found person, usable in subsequent actions.",
+    ),
+    ActionDef(
+        name="find_people",
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                'The main identifier of the people (name, gender, age, or "person").',
+            ),
+            ActionArg(
+                "person_info",
+                "str",
+                "Additional description of the people: posture (waving, sitting, "
+                "standing, lying), gesture (e.g. raising their left/right arm, "
+                "pointing left/right), clothing colour, or clothing item. May be an "
+                "empty string.",
+            ),
+            ActionArg(
+                "location",
+                "str",
+                "Where to look for the people. Must be a known room or surface.",
+                choices="places",
+            ),
+        ),
+        output="found_people",
+        summary="Find every matching person in a given location (the 'find all' variant of find_person).",
+        output_desc="A list of the unique IDs of the found people, usable in subsequent actions.",
     ),
     ActionDef(
         name="guide",
@@ -330,9 +375,7 @@ def _render_domestic_robot_grammar(
     action_alt = " | ".join(action_rule_names)
 
     lines: list[str] = []
-    lines.append(
-        "root ::= think speech | think speech exec | think plan speech exec"
-    )
+    lines.append("root ::= think speech | think speech exec | think plan speech exec")
     lines.append("")
     lines.append('think ::= "<think>" inner-text "</think>"')
     lines.append('speech    ::= "<speech>" inner-text "</speech>"')
@@ -391,51 +434,30 @@ def _render_domestic_robot_grammar(
     return "\n".join(lines) + "\n"
 
 
-def _render_known_locations(
-    rooms: tuple[str, ...] | None = None,
-    surfaces: tuple[str, ...] | None = None,
-) -> str:
-    """Render the KNOWN LOCATIONS prompt block.
+def _render_semantic_map(semantic_map: dict) -> str:
+    """Render the scene layout: rooms and the surfaces in each room.
 
-    ``rooms``/``surfaces`` override the static vocabulary with the backend's
-    actual world; when None the static tuples are used.
+    Objects are intentionally NOT listed. The robot knows the layout but not
+    where objects are -- it discovers that by searching (find_object), matching
+    the real/deployment setting where the map holds only surfaces and locations.
+    Duplicate surface names within a room are collapsed.
+
+    Byte-identical to ``robot_prompt._render_semantic_map`` in the dataset repo,
+    so the served ``# ENVIRONMENT`` section matches what the model trained on.
     """
-    rooms = rooms if rooms is not None else ROOMS
-    surfaces = surfaces if surfaces is not None else SURFACES
-    return (
-        f"Rooms: {', '.join(rooms)}\n"
-        f"Surfaces: {', '.join(surfaces)}\n"
-        'For "move"/"guide" destinations and "find_object"/"find_person" locations, '
-        "use any room or surface.\n"
-        'For "place" the destination must be one of the surfaces.'
-    )
-
-
-def _render_known_objects(objects: tuple[str, ...], is_sim: bool) -> str:
-    """Render the KNOWN OBJECTS prompt block from the given object set."""
-    which = "simulator" if is_sim else "real-life"
-    names = ", ".join(objects)
-    return (
-        f'These are the only object names you may use in "find_object" '
-        f"({which} set). Map what the user says to the closest one.\n{names}"
-    )
-
-
-# Actions that require a human and so can't run in the AI2-THOR simulator (no
-# people in the scene). Mirrors the backend's UNSUPPORTED_ACTIONS, so in sim the
-# planner is never even offered an action it would only fail on.
-_PERSON_ACTIONS = frozenset({"find_person", "guide", "follow", "deliver"})
-
-
-def _actions_for(object_set: str | None) -> tuple[ActionDef, ...]:
-    """The actions the planner may use: person actions are dropped in the sim."""
-    if is_simulator_set(object_set):
-        return tuple(a for a in ACTIONS if a.name not in _PERSON_ACTIONS)
-    return ACTIONS
+    lines: list[str] = []
+    for room in (semantic_map or {}).get("rooms", []):
+        lines.append(f"- {room.get('name', 'room')}")
+        seen: set = set()
+        for surface in room.get("contains_surfaces", []):
+            name = surface.get("name")
+            if isinstance(name, str) and name and name not in seen:
+                seen.add(name)
+                lines.append(f"    - {name}")
+    return "\n".join(lines) if lines else "(no environment information available)"
 
 
 _ROBOT_PLANNER_ACTIONS = _render_action_signatures(ACTIONS)
-_ROBOT_KNOWN_LOCATIONS = _render_known_locations()
 
 
 _DOMESTIC_ROBOT_PROMPT_TEMPLATE = """
@@ -454,6 +476,10 @@ You need to enclose the contents of your responses with XML tags:
 - <speech> [What is to be spoken out loud to the user] </speech>
 - <exec> [The action you want to execute next] </exec>
 
+# ENVIRONMENT
+The following is the layout of your environment: the rooms and the surfaces in each room. You know the layout, but you do NOT know where objects are. To locate an object, search for it with find_object; the action result tells you which surface it was found on (or that it was not found). Only reference rooms and surfaces that appear here, and map what the user says to the closest matching name. For a "place" action, the destination must be one of these surfaces.
+{semantic_map}
+
 # HOW YOU WORK
 When the user speaks to you either commanding you to do a task or asking you something, you have a flow of thought.
 
@@ -470,18 +496,11 @@ When the user requests some task you need to accomplish you need to plan a JSON 
 You are only allowed to use these python functions (actions) in your JSON plans!
 {available_actions}
 
-### 2.2 KNOWN LOCATIONS
-These are the only rooms and surfaces you may reference. Pick the closest match to what the user says.
-{known_locations}
-
-### 2.3 KNOWN OBJECTS
-{known_objects}
-
-### 2.4 EXAMPLE OF JSON PLAN TRACE
+### 2.2 EXAMPLE OF JSON PLAN TRACE
 Every action is an object with three keys: "name", a nested "parameters" object, and "output".
 "output" is the variable name an action binds (e.g. "found_object") or null if it returns nothing.
 Reference a previously bound value in later parameters with braces, e.g. "{found_object}".
-To find every matching object/person instead of just one, set "find_objects"/"find_people" to true.
+To find every matching object/person instead of just one, use the find_objects/find_people actions (they bind "found_objects"/"found_people").
 <plan>
 [
   {
@@ -489,8 +508,7 @@ To find every matching object/person instead of just one, set "find_objects"/"fi
     "parameters": {
       "object": "pencil",
       "object_info": "",
-      "location": "cabinet",
-      "find_objects": false
+      "location": "cabinet"
     },
     "output": "found_object"
   },
@@ -532,8 +550,7 @@ You have made a plan for some user request so now the exterior needs to know whi
   "parameters": {
     "object": "pencil",
     "object_info": "",
-    "location": "cabinet",
-    "find_objects": false
+    "location": "cabinet"
   },
   "output": "found_object"
 }
@@ -885,6 +902,14 @@ class DomesticRobotInstructions(BaseModel):
     # really exist in the loaded scene. None -> fall back to the static vocabulary.
     rooms: list[str] | None = None
     surfaces: list[str] | None = None
+    # Nested scene layout (rooms -> contained surfaces), forwarded by the bridge
+    # via session.update, rendered into the prompt's # ENVIRONMENT section. Shape:
+    # {"rooms": [{"name": <room>, "contains_surfaces": [{"name": <surface>}, ...]}]}
+    # -- matches the dataset's semantic_map so the served map is byte-identical to
+    # training. None -> "(no environment information available)" (e.g. real mode
+    # until the robot API forwards its map). The flat rooms/surfaces above still
+    # scope the grammar; this only drives the prompt text.
+    semantic_map: dict | None = None
 
     def _places(self) -> tuple[tuple[str, ...] | None, tuple[str, ...] | None]:
         rooms = tuple(self.rooms) if self.rooms else None
@@ -892,28 +917,16 @@ class DomesticRobotInstructions(BaseModel):
         return rooms, surfaces
 
     def make_system_prompt(self) -> str:
-        objects = objects_for(self.object_set)
-        is_sim = is_simulator_set(self.object_set)
-        rooms, surfaces = self._places()
-        known_locations = (
-            _render_known_locations(rooms, surfaces)
-            if (rooms or surfaces)
-            else _ROBOT_KNOWN_LOCATIONS
-        )
-        available_actions = (
-            _render_action_signatures(_actions_for(self.object_set))
-            if is_sim
-            else _ROBOT_PLANNER_ACTIONS
-        )
+        # All ten actions are advertised regardless of object_set, matching the
+        # training prompt byte-for-byte (person actions included). The object
+        # vocabulary and place vocabulary are still scoped per-scene below/in the
+        # grammar; only find_object(s)/pick/place are exercised today, but the
+        # model was trained with the full action list in view.
         prompt = _DOMESTIC_ROBOT_PROMPT_TEMPLATE
-        prompt = prompt.replace("{available_actions}", available_actions)
-        prompt = prompt.replace("{known_locations}", known_locations)
+        prompt = prompt.replace("{available_actions}", _ROBOT_PLANNER_ACTIONS)
         prompt = prompt.replace(
-            "{known_objects}", _render_known_objects(objects, is_sim)
+            "{semantic_map}", _render_semantic_map(self.semantic_map or {})
         )
-        # prompt = prompt.replace("{language_instructions}", LANGUAGE_CODE_TO_INSTRUCTIONS[self.language])
-        # prompt = prompt.replace("{additional_instructions}", self.text)
-        # prompt = prompt.replace("{_SYSTEM_PROMPT_BASICS}", _SYSTEM_PROMPT_BASICS)
         return prompt
 
     def make_guided_grammar(self) -> str | None:
@@ -921,7 +934,7 @@ class DomesticRobotInstructions(BaseModel):
             return None
         rooms, surfaces = self._places()
         return _render_domestic_robot_grammar(
-            _actions_for(self.object_set), objects_for(self.object_set), rooms, surfaces
+            ACTIONS, objects_for(self.object_set), rooms, surfaces
         )
 
 
