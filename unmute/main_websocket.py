@@ -476,7 +476,7 @@ async def receive_loop(
 
             if pcm.size:
                 await handler.receive((SAMPLE_RATE, pcm[np.newaxis, :]))
-                
+
         elif isinstance(message, ora.InputAudioBufferAppendPcm):
             try:
                 # No Opus decoding needed!
@@ -523,7 +523,22 @@ async def receive_loop(
                     continue
                 await handler.add_chat_message_delta(content, "user")
                 await handler._generate_response()
-                           
+
+        elif isinstance(message, ora.UnmuteToolMessage):
+            # Execution feedback (<action_result>) enters the chat history as a
+            # tool-role turn (not user), matching the training contract.
+            content = message.content.strip()
+            if not content:
+                continue
+            async with handler.turn_transition_lock:
+                if handler.chatbot.conversation_state() == "bot_speaking":
+                    logger.warning(
+                        "Ignoring unmute.tool_message while bot is speaking to avoid interruption."
+                    )
+                    continue
+                await handler.add_chat_message_delta(content, "tool")
+                await handler._generate_response()
+
         elif isinstance(message, ora.SessionUpdate):
             await handler.update_session(message.session)
             await emit_queue.put(ora.SessionUpdated(session=message.session))

@@ -309,7 +309,9 @@ async def run_bridge() -> None:
                             print(f"{ACTION_RESULT_LABEL} {formatted}", flush=True)
                             await _send_to_unmute(
                                 {
-                                    "type": "unmute.user_message",
+                                    # tool-role turn (not user): matches the training
+                                    # contract for <action_result> feedback.
+                                    "type": "unmute.tool_message",
                                     "content": content,
                                 }
                             )

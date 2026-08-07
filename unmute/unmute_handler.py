@@ -180,18 +180,19 @@ class UnmuteHandler(AsyncStreamHandler):
     async def add_chat_message_delta(
         self,
         delta: str,
-        role: Literal["user", "assistant"],
+        role: Literal["user", "assistant", "tool"],
         generating_message_i: int | None = None,  # Avoid race conditions
     ):
-        # A real user turn (transcribed speech, or an injected <action_result>) means the
-        # robot is no longer waiting blind on the in-flight action, so lift the silence
-        # gate. Skip the "..." silence marker (only fires when the gate is already down)
-        # AND empty/whitespace deltas -- the VAD/STT injects empty "" user deltas on every
-        # interruption (line ~412/630), and in browser mode mic noise / TTS bleed triggers
-        # those spuriously; letting them clear the gate drops it mid-action and lets a
-        # silence poke fire while the robot is still busy.
-        if role == "user" and delta.strip() and delta != USER_SILENCE_MARKER:
-            self._clear_pending_action("user turn")
+        # A real user turn (transcribed speech) or a tool turn (the <action_result>
+        # for the in-flight action) means the robot is no longer waiting blind on
+        # that action, so lift the silence gate. Skip the "..." silence marker (only
+        # fires when the gate is already down) AND empty/whitespace deltas -- the
+        # VAD/STT injects empty "" user deltas on every interruption (line ~412/630),
+        # and in browser mode mic noise / TTS bleed triggers those spuriously; letting
+        # them clear the gate drops it mid-action and lets a silence poke fire while
+        # the robot is still busy.
+        if role in ("user", "tool") and delta.strip() and delta != USER_SILENCE_MARKER:
+            self._clear_pending_action(f"{role} turn")
 
         is_new_message = await self.chatbot.add_chat_message_delta(
             delta, role, generating_message_i=generating_message_i

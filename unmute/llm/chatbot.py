@@ -31,7 +31,9 @@ class Chatbot:
             else:
                 # Or do we want "user_speaking" here?
                 return "waiting_for_user"
-        elif last_message["role"] == "system":
+        elif last_message["role"] in ("system", "tool"):
+            # A trailing tool turn is execution feedback we're about to respond to
+            # -- not the user speaking and not the bot speaking yet.
             return "waiting_for_user"
         else:
             raise RuntimeError(f"Unknown role: {last_message['role']}")
@@ -39,7 +41,7 @@ class Chatbot:
     async def add_chat_message_delta(
         self,
         delta: str,
-        role: Literal["user", "assistant"],
+        role: Literal["user", "assistant", "tool"],
         generating_message_i: int | None = None,  # Avoid race conditions
     ) -> bool:
         """Add a partial message to the chat history, adding spaces if necessary.
