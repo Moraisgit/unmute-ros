@@ -80,6 +80,19 @@ class Chatbot:
         messages = self.chat_history
 
         messages = preprocess_messages_for_llm(messages)
+
+        # The domestic-robot model was trained with user commands wrapped in
+        # <user_input>...</user_input>; serving injects the raw STT transcript, so
+        # wrap it here to match the training format. Assistant turns already carry
+        # their tags and tool turns are <action_result>, so only user turns need it.
+        if getattr(self._instructions, "type", None) == "domestic_robot":
+            for message in messages:
+                content = message["content"]
+                if message["role"] == "user" and not content.lstrip().startswith(
+                    "<user_input>"
+                ):
+                    message["content"] = f"<user_input>{content}</user_input>"
+
         return messages
 
     def set_instructions(self, instructions: Instructions):

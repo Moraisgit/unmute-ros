@@ -363,19 +363,41 @@ def _render_domestic_robot_grammar(
 ) -> str:
     """Generate a GBNF grammar enforcing the domestic robot output format.
 
-    Top-level shape: think [plan] speech [exec], with the constraints that
-    plan present implies exec present, and a response may be speech-only (no
-    action) so greetings/acknowledgements aren't forced to emit an <exec>.
-    Each action is a strict per-name rule
-    derived from ACTIONS, emitting ``{"name": ..., "parameters": {...}, "output": ...}``.
-    The ``output`` value is a fixed literal per action: the bound variable name,
-    or JSON ``null`` for actions that return nothing.
+    Top-level shape: any ordered run of <think>/<plan>/<speech> blocks, then an
+    optional single trailing <exec>. This mirrors the real training turn shapes,
+    where the planning turn is ``think plan speech exec`` but continuation turns
+    (after an <action_result>) are ``speech exec`` with NO think/plan, and a
+    finished/clarifying turn may be ``speech`` alone. Forcing think-first (as an
+    earlier version did) forbade the single most common turn shape and pushed the
+    model off-distribution, so we keep the prelude free-form and only cap it at one
+    trailing exec (one action per turn, per IMPORTANT rule 6). Blocks may be
+    separated by whitespace/newlines (``ws``), matching the trace formatter.
+    Each action is a strict per-name rule derived from ACTIONS, emitting
+    ``{"name": ..., "parameters": {...}, "output": ...}``. The ``output`` value is a
+    fixed literal per action: the bound variable name, or JSON ``null``.
     """
     action_rule_names = [a.name for a in actions]
     action_alt = " | ".join(action_rule_names)
 
     lines: list[str] = []
-    lines.append("root ::= think speech | think speech exec | think plan speech exec")
+    # Enumerate exactly the assistant turn shapes seen in the training data: at
+    # most one of each block, in <think> <plan> <speech> <exec> order, and a <plan>
+    # is ALWAYS followed by <exec> (planning turn) -- there is no production that
+    # lets the model plan or pile up multiple <speech> blocks without acting. The
+    # common continuation shape "speech exec" and the done shape "speech" are
+    # included; a bare "exec"/"think exec" too. Blocks may be separated by
+    # whitespace/newlines (`ws`), matching the trace formatter's "\n" joins.
+    root_alternatives = [
+        "think ws plan ws speech ws exec",  # planning turn
+        "plan ws speech ws exec",  # planning turn, no think
+        "think ws speech ws exec",  # act turn with reasoning
+        "speech ws exec",  # continuation (most common)
+        "think ws speech",  # reasoned speech-only (clarify/greet)
+        "speech",  # speech-only (done/ack)
+        "think ws exec",  # act with reasoning, no speech
+        "exec",  # bare action
+    ]
+    lines.append("root ::= " + " | ".join(root_alternatives))
     lines.append("")
     lines.append('think ::= "<think>" inner-text "</think>"')
     lines.append('speech    ::= "<speech>" inner-text "</speech>"')

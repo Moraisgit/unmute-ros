@@ -236,6 +236,7 @@ class UnmuteHandler(AsyncStreamHandler):
 
         quest = await self.start_up_tts(generating_message_i)
         instructions = self.chatbot.get_instructions()
+        is_domestic_robot = getattr(instructions, "type", None) == "domestic_robot"
         make_grammar = getattr(instructions, "make_guided_grammar", None)
         guided_grammar = make_grammar() if make_grammar is not None else None
 
@@ -305,6 +306,20 @@ class UnmuteHandler(AsyncStreamHandler):
                 await tts.send(word)
 
             full_text = "".join(response_words)
+            # The domestic-robot model must see its OWN full tagged output
+            # (<think>/<plan>/<exec>) on later turns, exactly as in training. The
+            # streamed history above only captured the spoken <speech> (extract_speech_tags
+            # strips the rest), so replace the assistant turn with the complete raw
+            # generation -- unless we were interrupted mid-stream (a newer message was
+            # appended), in which case we keep what was actually spoken.
+            if (
+                is_domestic_robot
+                and full_text.strip()
+                and len(self.chatbot.chat_history) == generating_message_i
+            ):
+                self.chatbot.chat_history[generating_message_i - 1]["content"] = (
+                    full_text
+                )
             await self.output_queue.put(
                 # The words include the whitespace, so no need to add it here
                 ora.ResponseTextDone(text=full_text)
@@ -376,10 +391,17 @@ class UnmuteHandler(AsyncStreamHandler):
                 await self._generate_response()
             return
 
+        instructions = self.chatbot.get_instructions()
+        # The domestic-robot planner must wait for the user's first command: it was
+        # trained with a user instruction as the first turn, so generating with only
+        # the system prompt is out-of-distribution and makes it hallucinate a task.
+        # For every other persona we keep the "bot greets first" behavior.
+        is_domestic_robot = getattr(instructions, "type", None) == "domestic_robot"
         if (
             len(self.chatbot.chat_history) == 1
             # Wait until the instructions are updated. A bit hacky
-            and self.chatbot.get_instructions() is not None
+            and instructions is not None
+            and not is_domestic_robot
         ):
             logger.info("Generating initial response.")
             await self._generate_response()
@@ -690,6 +712,13 @@ class UnmuteHandler(AsyncStreamHandler):
             ) < PENDING_ACTION_MAX_WAIT:
                 return
             self._clear_pending_action("max wait exceeded")
+
+        # The domestic-robot planner waits for a real spoken command. It was trained
+        # without "..." silence turns, so poking it on silence makes it hallucinate a
+        # task; instead it simply stays idle until the user speaks.
+        instructions = self.chatbot.get_instructions()
+        if getattr(instructions, "type", None) == "domestic_robot":
+            return
 
         if (
             self.chatbot.conversation_state() == "waiting_for_user"
