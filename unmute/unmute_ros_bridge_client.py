@@ -283,6 +283,11 @@ async def run_bridge() -> None:
                         assistant_speaking = False
                         assistant_audio_seen = False
                         user_speaking = False
+                        # Set when a world_vocab session.update arrives mid-response;
+                        # the refresh is held until the turn finishes so it can't
+                        # truncate the in-flight <speech> (the executor announces its
+                        # vocab late, so the first turn is the one at risk).
+                        pending_vocab_refresh = False
                         action_result_queue: asyncio.Queue[str] = asyncio.Queue(
                             maxsize=ACTION_RESULT_QUEUE_MAXSIZE
                         )
@@ -352,6 +357,7 @@ async def run_bridge() -> None:
                             nonlocal assistant_speaking
                             nonlocal assistant_audio_seen
                             nonlocal user_speaking
+                            nonlocal pending_vocab_refresh
                             packet_count = 0
                             async for message in laptop_ws:
                                 try:
@@ -402,15 +408,29 @@ async def run_bridge() -> None:
                                     }
                                     if new_vocab != _latest_world_vocab:
                                         _latest_world_vocab = new_vocab
-                                        logger.info(
-                                            "World vocab updated (rooms=%s, surfaces=%s); "
-                                            "re-sending session.update.",
-                                            new_vocab["rooms"],
-                                            new_vocab["surfaces"],
-                                        )
                                         # The backend loads after we connect, so the
-                                        # initial session had the static vocab; refresh it.
-                                        await _send_initial_session_update(unmute_ws)
+                                        # initial session had the static vocab; refresh
+                                        # it. Sending session.update mid-response resets
+                                        # the turn and clips the first <speech>, so if
+                                        # the assistant is speaking, hold the refresh and
+                                        # send it once the turn completes.
+                                        if assistant_speaking:
+                                            pending_vocab_refresh = True
+                                            logger.info(
+                                                "World vocab updated (rooms=%s, surfaces=%s); "
+                                                "deferring session.update until the current "
+                                                "response finishes.",
+                                                new_vocab["rooms"],
+                                                new_vocab["surfaces"],
+                                            )
+                                        else:
+                                            logger.info(
+                                                "World vocab updated (rooms=%s, surfaces=%s); "
+                                                "re-sending session.update.",
+                                                new_vocab["rooms"],
+                                                new_vocab["surfaces"],
+                                            )
+                                            await _send_initial_session_update(unmute_ws)
                                     continue
 
                                 if msg_type == "bridge.action_result":
@@ -515,6 +535,19 @@ async def run_bridge() -> None:
                                     logger.error(
                                         "Error forwarding audio to Unmute: %s", exc
                                     )
+
+                        async def _flush_deferred_vocab_refresh() -> None:
+                            """Send a world-vocab session.update that was held back
+                            because the assistant was mid-response, now that the turn
+                            has finished."""
+                            nonlocal pending_vocab_refresh
+                            if pending_vocab_refresh:
+                                pending_vocab_refresh = False
+                                logger.info(
+                                    "Response finished; sending the deferred world-vocab "
+                                    "session.update."
+                                )
+                                await _send_initial_session_update(unmute_ws)
 
                         async def forward_response_to_laptop() -> None:
                             nonlocal paused_session
@@ -752,6 +785,9 @@ async def run_bridge() -> None:
                                             )
                                         )
                                         await _flush_action_results()
+                                        # The turn is fully done: safe to apply a world
+                                        # vocab refresh that was held back mid-response.
+                                        await _flush_deferred_vocab_refresh()
                                     elif (
                                         msg_type
                                         == "conversation.item.input_audio_transcription.completed"
