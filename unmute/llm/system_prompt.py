@@ -383,19 +383,12 @@ def _render_domestic_robot_grammar(
     # Enumerate exactly the assistant turn shapes seen in the training data. Each
     # is a FIXED, bounded sequence (no unbounded repetition), so the model can't
     # pile up <speech> blocks and loop. A <plan> is ALWAYS followed by <exec> (a
-    # planning turn acts). NOTE: the "acknowledge then (re)plan" shapes (think,
-    # speech, plan, ... , exec) are only here because ~30% of the current dataset's
-    # failure/interruption/asr/full-duplex turns emit <speech> before <plan> -- the
-    # canonical order is think->plan->speech->exec and speech should NOT precede
-    # plan. These two alternatives are kept so guided decoding doesn't fight the
-    # current model during testing; once the dataset is regenerated in canonical
-    # order, DROP them (see DATASET_GAPS "speech-before-plan"). Blocks may be
-    # separated by whitespace/newlines (`ws`).
+    # planning turn acts), and <speech> NEVER precedes <plan> -- the canonical
+    # order is think->plan->speech->exec. Blocks may be separated by
+    # whitespace/newlines (`ws`).
     root_alternatives = [
         "think ws plan ws speech ws exec",  # planning turn
         "plan ws speech ws exec",  # planning turn, no think
-        "think ws speech ws plan ws speech ws exec",  # TEMP: acknowledge then (re)plan
-        "think ws speech ws plan ws exec",  # TEMP: acknowledge then (re)plan, no post-speech
         "think ws speech ws exec",  # act turn with reasoning
         "speech ws exec",  # continuation (most common)
         "think ws speech",  # reasoned speech-only (clarify/greet)
