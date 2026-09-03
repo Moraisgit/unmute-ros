@@ -244,8 +244,13 @@ class UnmuteHandler(AsyncStreamHandler):
             # if generating_message_i is 2, then we have a system prompt + an empty
             # assistant message signalling that we are generating a response.
             self.openai_client,
+            # The higher first-message temperature exists to vary a casual spoken
+            # greeting. The domestic robot's first turn is a structured plan instead,
+            # and at 0.7 guided decoding can sample an early </speech> right after the
+            # first content token (the "<speech>I wi</speech>" truncation), so keep the
+            # low temperature from the very first turn on.
             temperature=FIRST_MESSAGE_TEMPERATURE
-            if generating_message_i == 2
+            if (generating_message_i == 2 and not is_domestic_robot)
             else FURTHER_MESSAGES_TEMPERATURE,
             guided_grammar=guided_grammar,
         )
