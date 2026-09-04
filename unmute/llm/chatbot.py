@@ -31,7 +31,9 @@ class Chatbot:
             else:
                 # Or do we want "user_speaking" here?
                 return "waiting_for_user"
-        elif last_message["role"] == "system":
+        elif last_message["role"] in ("system", "tool"):
+            # A trailing tool turn is execution feedback we're about to respond to
+            # -- not the user speaking and not the bot speaking yet.
             return "waiting_for_user"
         else:
             raise RuntimeError(f"Unknown role: {last_message['role']}")
@@ -39,7 +41,7 @@ class Chatbot:
     async def add_chat_message_delta(
         self,
         delta: str,
-        role: Literal["user", "assistant"],
+        role: Literal["user", "assistant", "tool"],
         generating_message_i: int | None = None,  # Avoid race conditions
     ) -> bool:
         """Add a partial message to the chat history, adding spaces if necessary.
@@ -78,6 +80,19 @@ class Chatbot:
         messages = self.chat_history
 
         messages = preprocess_messages_for_llm(messages)
+
+        # The domestic-robot model was trained with user commands wrapped in
+        # <user_input>...</user_input>; serving injects the raw STT transcript, so
+        # wrap it here to match the training format. Assistant turns already carry
+        # their tags and tool turns are <action_result>, so only user turns need it.
+        if getattr(self._instructions, "type", None) == "domestic_robot":
+            for message in messages:
+                content = message["content"]
+                if message["role"] == "user" and not content.lstrip().startswith(
+                    "<user_input>"
+                ):
+                    message["content"] = f"<user_input>{content}</user_input>"
+
         return messages
 
     def set_instructions(self, instructions: Instructions):

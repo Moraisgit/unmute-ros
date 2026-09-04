@@ -180,18 +180,19 @@ class UnmuteHandler(AsyncStreamHandler):
     async def add_chat_message_delta(
         self,
         delta: str,
-        role: Literal["user", "assistant"],
+        role: Literal["user", "assistant", "tool"],
         generating_message_i: int | None = None,  # Avoid race conditions
     ):
-        # A real user turn (transcribed speech, or an injected <action_result>) means the
-        # robot is no longer waiting blind on the in-flight action, so lift the silence
-        # gate. Skip the "..." silence marker (only fires when the gate is already down)
-        # AND empty/whitespace deltas -- the VAD/STT injects empty "" user deltas on every
-        # interruption (line ~412/630), and in browser mode mic noise / TTS bleed triggers
-        # those spuriously; letting them clear the gate drops it mid-action and lets a
-        # silence poke fire while the robot is still busy.
-        if role == "user" and delta.strip() and delta != USER_SILENCE_MARKER:
-            self._clear_pending_action("user turn")
+        # A real user turn (transcribed speech) or a tool turn (the <action_result>
+        # for the in-flight action) means the robot is no longer waiting blind on
+        # that action, so lift the silence gate. Skip the "..." silence marker (only
+        # fires when the gate is already down) AND empty/whitespace deltas -- the
+        # VAD/STT injects empty "" user deltas on every interruption (line ~412/630),
+        # and in browser mode mic noise / TTS bleed triggers those spuriously; letting
+        # them clear the gate drops it mid-action and lets a silence poke fire while
+        # the robot is still busy.
+        if role in ("user", "tool") and delta.strip() and delta != USER_SILENCE_MARKER:
+            self._clear_pending_action(f"{role} turn")
 
         is_new_message = await self.chatbot.add_chat_message_delta(
             delta, role, generating_message_i=generating_message_i
@@ -235,6 +236,7 @@ class UnmuteHandler(AsyncStreamHandler):
 
         quest = await self.start_up_tts(generating_message_i)
         instructions = self.chatbot.get_instructions()
+        is_domestic_robot = getattr(instructions, "type", None) == "domestic_robot"
         make_grammar = getattr(instructions, "make_guided_grammar", None)
         guided_grammar = make_grammar() if make_grammar is not None else None
 
@@ -242,8 +244,13 @@ class UnmuteHandler(AsyncStreamHandler):
             # if generating_message_i is 2, then we have a system prompt + an empty
             # assistant message signalling that we are generating a response.
             self.openai_client,
+            # The higher first-message temperature exists to vary a casual spoken
+            # greeting. The domestic robot's first turn is a structured plan instead,
+            # and at 0.7 guided decoding can sample an early </speech> right after the
+            # first content token (the "<speech>I wi</speech>" truncation), so keep the
+            # low temperature from the very first turn on.
             temperature=FIRST_MESSAGE_TEMPERATURE
-            if generating_message_i == 2
+            if (generating_message_i == 2 and not is_domestic_robot)
             else FURTHER_MESSAGES_TEMPERATURE,
             guided_grammar=guided_grammar,
         )
@@ -304,6 +311,20 @@ class UnmuteHandler(AsyncStreamHandler):
                 await tts.send(word)
 
             full_text = "".join(response_words)
+            # The domestic-robot model must see its OWN full tagged output
+            # (<think>/<plan>/<exec>) on later turns, exactly as in training. The
+            # streamed history above only captured the spoken <speech> (extract_speech_tags
+            # strips the rest), so replace the assistant turn with the complete raw
+            # generation -- unless we were interrupted mid-stream (a newer message was
+            # appended), in which case we keep what was actually spoken.
+            if (
+                is_domestic_robot
+                and full_text.strip()
+                and len(self.chatbot.chat_history) == generating_message_i
+            ):
+                self.chatbot.chat_history[generating_message_i - 1]["content"] = (
+                    full_text
+                )
             await self.output_queue.put(
                 # The words include the whitespace, so no need to add it here
                 ora.ResponseTextDone(text=full_text)
@@ -375,10 +396,17 @@ class UnmuteHandler(AsyncStreamHandler):
                 await self._generate_response()
             return
 
+        instructions = self.chatbot.get_instructions()
+        # The domestic-robot planner must wait for the user's first command: it was
+        # trained with a user instruction as the first turn, so generating with only
+        # the system prompt is out-of-distribution and makes it hallucinate a task.
+        # For every other persona we keep the "bot greets first" behavior.
+        is_domestic_robot = getattr(instructions, "type", None) == "domestic_robot"
         if (
             len(self.chatbot.chat_history) == 1
             # Wait until the instructions are updated. A bit hacky
-            and self.chatbot.get_instructions() is not None
+            and instructions is not None
+            and not is_domestic_robot
         ):
             logger.info("Generating initial response.")
             await self._generate_response()
@@ -689,6 +717,13 @@ class UnmuteHandler(AsyncStreamHandler):
             ) < PENDING_ACTION_MAX_WAIT:
                 return
             self._clear_pending_action("max wait exceeded")
+
+        # The domestic-robot planner waits for a real spoken command. It was trained
+        # without "..." silence turns, so poking it on silence makes it hallucinate a
+        # task; instead it simply stays idle until the user speaks.
+        instructions = self.chatbot.get_instructions()
+        if getattr(instructions, "type", None) == "domestic_robot":
+            return
 
         if (
             self.chatbot.conversation_state() == "waiting_for_user"

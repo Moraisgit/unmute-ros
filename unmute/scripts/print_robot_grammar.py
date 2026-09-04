@@ -17,7 +17,7 @@ See also print_robot_combinations.sh, which dumps every combination at once.
 import argparse
 
 from unmute.llm.robot_world import objects_for
-from unmute.llm.system_prompt import _actions_for, _render_domestic_robot_grammar
+from unmute.llm.system_prompt import ACTIONS, _render_domestic_robot_grammar
 
 
 def _split(value: str | None) -> tuple[str, ...] | None:
@@ -38,7 +38,7 @@ def main() -> None:
 
     print(
         _render_domestic_robot_grammar(
-            _actions_for(args.object_set),
+            ACTIONS,
             objects_for(args.object_set),
             _split(args.rooms),
             _split(args.surfaces),

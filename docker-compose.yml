@@ -110,7 +110,12 @@ services:
         # "--model=Qwen/Qwen3-30B-A3B-Instruct-2507",
         # "--model=meta-llama/Llama-3.1-8B-Instruct",
         # "--model=Qwen/Qwen3-8B",
-        "--model=Qwen/Qwen2.5-7B-Instruct",
+        # "--model=Qwen/Qwen2.5-7B-Instruct",
+        # Fine-tuned GPSR model (LoRA merged into bf16; serve like the base).
+        # In-container path: host /mnt/.cache/huggingface is mounted at
+        # /root/.cache/huggingface (see the volume below).
+        "--model=/root/.cache/huggingface/models/qwen2.5-7b-gpsr-merged",
+        "--served-model-name=qwen2.5-7b-gpsr-merged",
 
         # NOTE: You can adapt this based on your GPU memory.
         # A higher value takes more memory but supports longer conversations.

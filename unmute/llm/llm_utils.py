@@ -1,3 +1,4 @@
+import os
 import re
 from copy import deepcopy
 from functools import cache
@@ -11,6 +12,17 @@ from ..kyutai_constants import KYUTAI_LLM_API_KEY, KYUTAI_LLM_MODEL
 
 INTERRUPTION_CHAR = "—"  # em-dash
 USER_SILENCE_MARKER = "..."
+
+# Anti-degeneration guardrails for the LLM sampling. A confused/ambiguous state can
+# make the model collapse into repeating a phrase; low continuation temperature makes
+# it worse. repetition_penalty discourages that (mild by default so it doesn't distort
+# the JSON the grammar already constrains -- among grammar-valid tokens it mostly damps
+# free-text repetition). max_tokens is a generous HARD BACKSTOP: it's set well above the
+# longest legitimate turn (a multi-action <plan> + <think>/<speech>/<exec> is ~500-900
+# tokens), so it never truncates real plans -- it only stops a runaway loop from going
+# forever. Both are env-tunable; repetition_penalty=1.0 disables that logit processor.
+LLM_MAX_TOKENS = int(os.environ.get("UNMUTE_LLM_MAX_TOKENS", "2048"))
+LLM_REPETITION_PENALTY = float(os.environ.get("UNMUTE_LLM_REPETITION_PENALTY", "1.1"))
 
 
 def preprocess_messages_for_llm(
@@ -152,12 +164,16 @@ class VLLMStream:
         if self.guided_grammar is not None:
             extra_body["guided_grammar"] = self.guided_grammar
             extra_body["guided_decoding_backend"] = "xgrammar"
+        if LLM_REPETITION_PENALTY != 1.0:
+            # vLLM extension; damps degeneration loops without truncating output.
+            extra_body["repetition_penalty"] = LLM_REPETITION_PENALTY
 
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=cast(Any, messages),  # Cast and hope for the best
             stream=True,
             temperature=self.temperature,
+            max_tokens=LLM_MAX_TOKENS,
             extra_body=extra_body or None,
         )
 
