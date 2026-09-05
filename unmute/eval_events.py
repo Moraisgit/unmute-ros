@@ -71,7 +71,7 @@ class EventLog:
         self.turn += 1
         return self.turn
 
-    def emit(self, type: str, **fields: Any) -> None:
+    def emit(self, event: str, **fields: Any) -> None:
         """Record one event. A no-op (and cheap) when logging is disabled."""
         if self._fh is None:
             return
@@ -81,7 +81,7 @@ class EventLog:
             "t_wall": datetime.now(timezone.utc).isoformat(),
             "seq": self._seq,
             "turn": self.turn,
-            "type": type,
+            "type": event,
         }
         record.update(fields)
         try:

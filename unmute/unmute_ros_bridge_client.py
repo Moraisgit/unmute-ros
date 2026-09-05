@@ -11,6 +11,11 @@ import numpy as np
 import websockets
 
 from unmute.eval_events import EventLog
+from unmute.llm.llm_utils import (
+    LLM_FREQUENCY_PENALTY,
+    LLM_MAX_TOKENS,
+    LLM_REPETITION_PENALTY,
+)
 from unmute.llm.unmute_tag_parser import LLMTagPrinter
 
 # Defaults target the "ROS on laptop + remote Unmute over SSH tunnel" setup.
@@ -276,6 +281,16 @@ async def run_bridge() -> None:
                         await _send_initial_session_update(unmute_ws)
                         EVENTS.emit(
                             "session.start",
+                            # Sampling config as this checkout defines it. NOTE: the
+                            # LLM runs on the remote backend, so this is the *local
+                            # code's* view, not a readback from the serving process --
+                            # it catches "changed but never synced/redeployed" drift,
+                            # it does not prove what vLLM actually ran with.
+                            llm_config_local_view={
+                                "max_tokens": LLM_MAX_TOKENS,
+                                "repetition_penalty": LLM_REPETITION_PENALTY,
+                                "frequency_penalty": LLM_FREQUENCY_PENALTY,
+                            },
                             pcm_format=PCM_FORMAT,
                             input_sr=INPUT_SAMPLE_RATE,
                             unmute_sr=UNMUTE_SAMPLE_RATE,
@@ -724,7 +739,18 @@ async def run_bridge() -> None:
                                             )
                                     elif msg_type == "unmute.interrupted_by_vad":
                                         EVENTS.emit("assistant.interrupted_by_vad")
+                                        # The VAD cut the assistant off, so it is no
+                                        # longer speaking -- and an interrupted response
+                                        # never sends response.audio.done/text.done, so
+                                        # nothing else would ever clear this. Leaving it
+                                        # latched deadlocks the conversation:
+                                        # _can_inject_action_result() stays False, so
+                                        # every later <action_result> queues forever and
+                                        # the model never learns its action finished.
+                                        assistant_speaking = False
+                                        assistant_audio_seen = False
                                         _reset_tag_state("interrupted_by_vad")
+                                        await _flush_action_results()
                                     elif msg_type == "response.text.delta":
                                         if not turn_open:
                                             turn_open = True

@@ -13,16 +13,32 @@ from ..kyutai_constants import KYUTAI_LLM_API_KEY, KYUTAI_LLM_MODEL
 INTERRUPTION_CHAR = "—"  # em-dash
 USER_SILENCE_MARKER = "..."
 
-# Anti-degeneration guardrails for the LLM sampling. A confused/ambiguous state can
-# make the model collapse into repeating a phrase; low continuation temperature makes
-# it worse. repetition_penalty discourages that (mild by default so it doesn't distort
-# the JSON the grammar already constrains -- among grammar-valid tokens it mostly damps
-# free-text repetition). max_tokens is a generous HARD BACKSTOP: it's set well above the
-# longest legitimate turn (a multi-action <plan> + <think>/<speech>/<exec> is ~500-900
-# tokens), so it never truncates real plans -- it only stops a runaway loop from going
-# forever. Both are env-tunable; repetition_penalty=1.0 disables that logit processor.
-LLM_MAX_TOKENS = int(os.environ.get("UNMUTE_LLM_MAX_TOKENS", "2048"))
-LLM_REPETITION_PENALTY = float(os.environ.get("UNMUTE_LLM_REPETITION_PENALTY", "1.1"))
+# Anti-degeneration guardrails for the LLM sampling. A confused/ambiguous state can make
+# the model collapse into repeating a phrase ("I will proceed to the kitchen." xN with an
+# unclosed <speech>); the low continuation temperature makes it worse.
+#
+# WHY frequency_penalty AND NOT repetition_penalty (measured 2026-09-03/05):
+#   vLLM's repetition_penalty is computed over the PROMPT *and* the generated text. The
+#   domestic-robot system prompt is huge, so at 1.1 it pre-penalises the natural
+#   continuation and the model closes <speech> after ~2 tokens -- the robot says a stub
+#   like "I wi" (10/10 turns truncated at 1.1, 0/10 at 1.0; also with guided decoding
+#   off, so the grammar is not the cause). Setting it to 1.0 fixes the truncation but
+#   disables the logit processor entirely, leaving NO loop guardrail -- which is how the
+#   repetition loops come back. The two ends of that one dial are the two bugs.
+#   frequency_penalty is computed over the GENERATED tokens only, so it damps a runaway
+#   loop without ever seeing the prompt. That is the knob to use here.
+#
+# Defaults therefore: repetition_penalty OFF (1.0), frequency_penalty mild, and
+# max_tokens as a HARD BACKSTOP set above the longest legitimate turn (a multi-action
+# <plan> + <think>/<speech>/<exec> is ~500-900 tokens) so it never truncates a real plan
+# and only stops a runaway. All three are env-tunable.
+#
+# These live in code, NOT in a hand-edited remote docker-compose: an unversioned
+# remote-only override does not survive a sync/redeploy, and the eval harness must be
+# able to record the effective sampling config per run (EVALUATION_DESIGN.md sec. 5).
+LLM_MAX_TOKENS = int(os.environ.get("UNMUTE_LLM_MAX_TOKENS", "768"))
+LLM_REPETITION_PENALTY = float(os.environ.get("UNMUTE_LLM_REPETITION_PENALTY", "1.0"))
+LLM_FREQUENCY_PENALTY = float(os.environ.get("UNMUTE_LLM_FREQUENCY_PENALTY", "0.4"))
 
 
 def preprocess_messages_for_llm(
@@ -165,7 +181,8 @@ class VLLMStream:
             extra_body["guided_grammar"] = self.guided_grammar
             extra_body["guided_decoding_backend"] = "xgrammar"
         if LLM_REPETITION_PENALTY != 1.0:
-            # vLLM extension; damps degeneration loops without truncating output.
+            # vLLM extension. Off by default: it also counts prompt tokens, which
+            # truncates <speech> against this system prompt (see the note above).
             extra_body["repetition_penalty"] = LLM_REPETITION_PENALTY
 
         stream = await self.client.chat.completions.create(
@@ -174,6 +191,8 @@ class VLLMStream:
             stream=True,
             temperature=self.temperature,
             max_tokens=LLM_MAX_TOKENS,
+            # Generated-tokens-only penalty: the actual loop guardrail.
+            frequency_penalty=LLM_FREQUENCY_PENALTY,
             extra_body=extra_body or None,
         )
 
