@@ -10,6 +10,7 @@ from urllib.request import urlopen
 import numpy as np
 import websockets
 
+from unmute.eval_events import EventLog
 from unmute.llm.unmute_tag_parser import LLMTagPrinter
 
 # Defaults target the "ROS on laptop + remote Unmute over SSH tunnel" setup.
@@ -51,6 +52,11 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("UnmuteBridge")
+
+# Full-duplex evaluation instrumentation. Disabled unless EVAL_EVENT_LOG is
+# set, so ordinary smoke-test runs carry no eval machinery (see
+# .claude/EVALUATION_DESIGN.md). Every emit() below is a no-op when off.
+EVENTS = EventLog.from_env()
 
 
 class SessionResetRequested(Exception):
@@ -268,6 +274,15 @@ async def run_bridge() -> None:
                     ) as unmute_ws:
                         logger.info("Unmute socket connected")
                         await _send_initial_session_update(unmute_ws)
+                        EVENTS.emit(
+                            "session.start",
+                            pcm_format=PCM_FORMAT,
+                            input_sr=INPUT_SAMPLE_RATE,
+                            unmute_sr=UNMUTE_SAMPLE_RATE,
+                            voice=UNMUTE_VOICE,
+                            action_simulator=ACTION_SIMULATOR,
+                            unmute_ws=UNMUTE_WS_URL,
+                        )
                         logger.info(
                             (
                                 "Bridge active (pcm_format=%s, allow_recording=%s, "
@@ -310,6 +325,7 @@ async def run_bridge() -> None:
                             )
 
                         async def _send_action_result(content: str) -> None:
+                            EVENTS.emit("action.result", content=content)
                             formatted = _format_action_result_for_print(content)
                             print(f"{ACTION_RESULT_LABEL} {formatted}", flush=True)
                             await _send_to_unmute(
@@ -408,6 +424,11 @@ async def run_bridge() -> None:
                                     }
                                     if new_vocab != _latest_world_vocab:
                                         _latest_world_vocab = new_vocab
+                                        EVENTS.emit(
+                                            "world_vocab.updated",
+                                            rooms=new_vocab["rooms"],
+                                            surfaces=new_vocab["surfaces"],
+                                        )
                                         # The backend loads after we connect, so the
                                         # initial session had the static vocab; refresh
                                         # it. Sending session.update mid-response resets
@@ -430,7 +451,9 @@ async def run_bridge() -> None:
                                                 new_vocab["rooms"],
                                                 new_vocab["surfaces"],
                                             )
-                                            await _send_initial_session_update(unmute_ws)
+                                            await _send_initial_session_update(
+                                                unmute_ws
+                                            )
                                     continue
 
                                 if msg_type == "bridge.action_result":
@@ -555,6 +578,11 @@ async def run_bridge() -> None:
                             nonlocal assistant_audio_seen
                             nonlocal user_speaking
                             text_deltas: list[str] = []
+                            # Per-response eval state: a turn opens on the
+                            # first delta of a response and closes at text.done.
+                            turn_open = False
+                            first_audio_seen = False
+                            first_raw_token_seen = False
                             active_stream_speaker: str | None = None
                             last_char_by_speaker: dict[str, str | None] = {
                                 "user": None,
@@ -637,6 +665,12 @@ async def run_bridge() -> None:
                                         continue
 
                                     if msg_type == "response.audio.delta":
+                                        if not turn_open:
+                                            turn_open = True
+                                            EVENTS.next_turn()
+                                        if not first_audio_seen:
+                                            first_audio_seen = True
+                                            EVENTS.emit("assistant.audio_first")
                                         assistant_speaking = True
                                         assistant_audio_seen = True
                                         payload = {
@@ -648,6 +682,7 @@ async def run_bridge() -> None:
                                         msg_type == "input_audio_buffer.speech_started"
                                     ):
                                         user_speaking = True
+                                        EVENTS.emit("user.speech_started")
                                         _reset_tag_state("speech_started")
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_started")
@@ -658,6 +693,10 @@ async def run_bridge() -> None:
                                         msg_type == "input_audio_buffer.speech_stopped"
                                     ):
                                         user_speaking = False
+                                        # FTED start boundary: this backend does not
+                                        # emit transcription.completed, so the VAD's
+                                        # end-of-speech is the end-of-turn we have.
+                                        EVENTS.emit("user.speech_stopped")
                                         if DEBUG_STT_EVENTS:
                                             logger.debug("STT/VAD: speech_stopped")
                                         await laptop_ws.send(
@@ -684,8 +723,12 @@ async def run_bridge() -> None:
                                                 )
                                             )
                                     elif msg_type == "unmute.interrupted_by_vad":
+                                        EVENTS.emit("assistant.interrupted_by_vad")
                                         _reset_tag_state("interrupted_by_vad")
                                     elif msg_type == "response.text.delta":
+                                        if not turn_open:
+                                            turn_open = True
+                                            EVENTS.next_turn()
                                         assistant_speaking = True
                                         text_delta = data.get("delta", "")
                                         if text_delta:
@@ -703,12 +746,21 @@ async def run_bridge() -> None:
                                         }
                                         await laptop_ws.send(json.dumps(payload))
                                     elif msg_type == "response.audio.done":
+                                        EVENTS.emit("assistant.audio_done")
                                         assistant_speaking = False
                                         assistant_audio_seen = False
                                         await _flush_action_results()
                                     elif msg_type == "unmute.response.text.delta.ready":
                                         raw_delta = data.get("delta", "")
                                         if raw_delta:
+                                            if not turn_open:
+                                                turn_open = True
+                                                EVENTS.next_turn()
+                                            if not first_raw_token_seen:
+                                                first_raw_token_seen = True
+                                                EVENTS.emit(
+                                                    "assistant.generating_first_token"
+                                                )
                                             if DEBUG_LLM_RAW_OUTPUT:
                                                 _print_stream_chunk(
                                                     "llm_raw_output",
@@ -752,6 +804,15 @@ async def run_bridge() -> None:
                                         # Now that the raw stream is done, flush the
                                         # accumulated parsed tag blocks in arrival order.
                                         for tag_name, content in pending_tag_blocks:
+                                            EVENTS.emit(
+                                                "llm.tag", tag=tag_name, content=content
+                                            )
+                                            if tag_name == "exec":
+                                                # 'executing' phase trigger for the
+                                                # Track-A injector.
+                                                EVENTS.emit(
+                                                    "exec.dispatch", content=content
+                                                )
                                             label = TAG_LABELS.get(
                                                 tag_name, UNMUTE_LABEL
                                             )
@@ -785,6 +846,10 @@ async def run_bridge() -> None:
                                             )
                                         )
                                         await _flush_action_results()
+                                        EVENTS.emit("assistant.text_done")
+                                        turn_open = False
+                                        first_audio_seen = False
+                                        first_raw_token_seen = False
                                         # The turn is fully done: safe to apply a world
                                         # vocab refresh that was held back mid-response.
                                         await _flush_deferred_vocab_refresh()
@@ -792,6 +857,12 @@ async def run_bridge() -> None:
                                         msg_type
                                         == "conversation.item.input_audio_transcription.completed"
                                     ):
+                                        # FTED starts here: the semantic-VAD/STT
+                                        # end-of-turn is what the system acts on.
+                                        EVENTS.emit(
+                                            "user.transcript_done",
+                                            text=(data.get("transcript") or ""),
+                                        )
                                         if (
                                             PRINT_USER_TRANSCRIPT_DELTAS
                                             and active_stream_speaker == "user"
