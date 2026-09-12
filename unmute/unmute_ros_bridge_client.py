@@ -43,6 +43,11 @@ PRINT_TEXT_DELTAS = os.environ.get("PRINT_TEXT_DELTAS", "false").lower() == "tru
 DEBUG_MIC_INPUT = os.environ.get("DEBUG_MIC_INPUT", "false").lower() == "true"
 DEBUG_MIC_EVERY_N_PACKETS = int(os.environ.get("DEBUG_MIC_EVERY_N_PACKETS", "25"))
 DEBUG_STT_EVENTS = os.environ.get("DEBUG_STT_EVENTS", "false").lower() == "true"
+# Frames between audio-flow heartbeats in the eval log. 250 packets = 5 s at
+# the 20 ms mic cadence: enough to pin down when a stream stopped, cheap enough
+# to leave on for every evaluated run.
+AUDIO_FLOW_EVERY_N = 250
+
 PRINT_USER_TRANSCRIPT_DELTAS = (
     os.environ.get("PRINT_USER_TRANSCRIPT_DELTAS", "true").lower() == "true"
 )
@@ -390,6 +395,7 @@ async def run_bridge() -> None:
                             nonlocal user_speaking
                             nonlocal pending_vocab_refresh
                             packet_count = 0
+                            forwarded_count = 0
                             async for message in laptop_ws:
                                 try:
                                     data = json.loads(message)
@@ -479,6 +485,17 @@ async def run_bridge() -> None:
                                         await _send_action_result(content)
                                     else:
                                         _queue_action_result(content)
+                                    continue
+
+                                if msg_type == "robot.exec_dropped":
+                                    # Queued execs a re-plan flushed before
+                                    # they ever ran. They still appear as
+                                    # exec.dispatch, so without this they look
+                                    # like actions that never came back.
+                                    EVENTS.emit(
+                                        "exec.dropped",
+                                        count=data.get("count", 1),
+                                    )
                                     continue
 
                                 if msg_type == "robot.exec_cancelled":
@@ -574,6 +591,20 @@ async def run_bridge() -> None:
                                         "format": outgoing_format,
                                     }
                                     await _send_to_unmute(unmute_msg)
+                                    forwarded_count += 1
+                                    # A heartbeat for the evaluation harness.
+                                    # When an injected utterance produces no
+                                    # transcript at all, this says whether the
+                                    # bridge was still forwarding audio at that
+                                    # moment -- otherwise "the STT went deaf"
+                                    # and "nothing was being sent" look
+                                    # identical from the event log.
+                                    if forwarded_count % AUDIO_FLOW_EVERY_N == 0:
+                                        EVENTS.emit(
+                                            "audio.flow",
+                                            received=packet_count,
+                                            forwarded=forwarded_count,
+                                        )
                                 except websockets.exceptions.ConnectionClosed as exc:
                                     logger.info(
                                         "Unmute websocket closed while forwarding audio; reconnecting: %s",
