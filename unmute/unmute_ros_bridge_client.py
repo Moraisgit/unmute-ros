@@ -481,6 +481,17 @@ async def run_bridge() -> None:
                                         _queue_action_result(content)
                                     continue
 
+                                if msg_type == "robot.exec_cancelled":
+                                    # Executor aborted an in-flight action
+                                    # because a new plan superseded it. Only
+                                    # logged, never forwarded: the model
+                                    # already re-planned.
+                                    EVENTS.emit(
+                                        "exec.cancelled",
+                                        action=data.get("name"),
+                                    )
+                                    continue
+
                                 if msg_type == "browser.audio_opus":
                                     # Browser mic: already Opus-encoded with AEC
                                     # applied by the browser. Forward as-is to the
