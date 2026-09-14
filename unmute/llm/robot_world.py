@@ -6,6 +6,15 @@ KNOWN OBJECTS blocks and the guided-decoding grammar are all derived from them.
 Two object sets are kept deliberately separate:
   * AI2THOR_OBJECTS - the simulator's perception vocabulary.
   * REAL_OBJECTS    - what the physical robot can actually detect.
+
+Objects are hand-maintained on purpose, unlike ROOMS/SURFACES which the backend
+announces per scene (robot.world_vocab). This list is what the robot can
+RECOGNISE, not what happens to be in the current house: deriving it from the
+scene would tell the model which objects exist there, and the prompt promises
+the opposite -- "You know the layout, but you do NOT know where objects are".
+Anything absent here is unsayable: the grammar pins the object argument, so
+find_object(<missing name>) cannot be generated however the user phrases it.
+Check new scenarios against it (eval/WORLD.md marks which objects are sayable).
 The active set is chosen by the ACTION_SIMULATOR env var (the same toggle
 run_unmute_bridge.sh uses to launch the simulator): "true" -> simulator objects,
 anything else -> real-life objects.
@@ -101,6 +110,7 @@ AI2THOR_OBJECTS: tuple[str, ...] = (
     "microwave",
     "mirror",
     "mug",
+    "newspaper",
     "ottoman",
     "painting",
     "pan",
@@ -109,21 +119,32 @@ AI2THOR_OBJECTS: tuple[str, ...] = (
     "pencil",
     "pepper shaker",
     "pillow",
+    "plate",
+    "plunger",
     "pot",
+    "potato",
     "remote control",
     "salt shaker",
     "scrub brush",
     "side table",
+    "soap bar",
     "soap bottle",
     "sofa",
     "spoon",
+    "spray bottle",
+    "statue",
+    "teddy bear",
     "television",
+    "tennis racket",
     "tissue box",
+    "toilet paper",
     "tomato",
     "towel holder",
     "vacuum cleaner",
+    "vase",
     "watch",
     "window",
+    "wine bottle",
 )
 
 # Real-life robot object vocabulary.
