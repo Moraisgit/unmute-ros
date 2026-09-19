@@ -640,6 +640,14 @@ async def run_bridge() -> None:
                             turn_open = False
                             first_audio_seen = False
                             first_raw_token_seen = False
+                            # What the STT made of the user's speech, rebuilt
+                            # from its deltas. This backend never sends
+                            # transcription.completed, so the only record of
+                            # what the model was actually given is the delta
+                            # stream -- which until now existed solely as
+                            # colour on stdout. The evaluation harness needs it
+                            # as data to measure recognition error.
+                            user_transcript: list[str] = []
                             active_stream_speaker: str | None = None
                             last_char_by_speaker: dict[str, str | None] = {
                                 "user": None,
@@ -765,6 +773,24 @@ async def run_bridge() -> None:
                                         == "conversation.item.input_audio_transcription.delta"
                                     ):
                                         delta = data.get("delta", "")
+                                        if delta:
+                                            # The STT streams word-group chunks
+                                            # with no separators; the display
+                                            # inserts the spaces. Concatenating
+                                            # raw deltas yields
+                                            # "putSonthemsofasinstead", which
+                                            # scores as near-total recognition
+                                            # failure when nothing was actually
+                                            # misheard. Reuse the display's own
+                                            # rule so the logged transcript is
+                                            # exactly what was shown.
+                                            if user_transcript and (
+                                                _needs_boundary_space(
+                                                    user_transcript[-1][-1:], delta
+                                                )
+                                            ):
+                                                user_transcript.append(" ")
+                                            user_transcript.append(delta)
                                         if PRINT_USER_TRANSCRIPT_DELTAS and delta:
                                             _print_stream_chunk(
                                                 "user", USER_LABEL, delta
@@ -826,6 +852,21 @@ async def run_bridge() -> None:
                                                 EVENTS.next_turn()
                                             if not first_raw_token_seen:
                                                 first_raw_token_seen = True
+                                                # Emit the user's transcript here,
+                                                # not at speech_stopped: the VAD's
+                                                # end-of-speech fires before the STT
+                                                # has finished, so flushing there
+                                                # would truncate the very last words
+                                                # -- and report them as recognition
+                                                # errors that never happened.
+                                                if user_transcript:
+                                                    EVENTS.emit(
+                                                        "user.transcript_done",
+                                                        text="".join(
+                                                            user_transcript
+                                                        ).strip(),
+                                                    )
+                                                    user_transcript.clear()
                                                 EVENTS.emit(
                                                     "assistant.generating_first_token"
                                                 )
