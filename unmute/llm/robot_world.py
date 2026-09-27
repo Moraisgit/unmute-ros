@@ -225,5 +225,8 @@ def choice_sets(
         "rooms": rooms,
         "surfaces": surfaces,
         "places": tuple(rooms) + tuple(surfaces),
+        # follow.destination: a real place, or "" when the request never said
+        # where (~63% of trained follows). BACKEND_ALIGNMENT sec. 3.
+        "places_or_empty": tuple(rooms) + tuple(surfaces) + ("",),
         "objects": objects if objects is not None else active_objects(),
     }

@@ -242,33 +242,6 @@ ACTIONS: tuple[ActionDef, ...] = (
         output_desc="The unique ID of the found person, usable in subsequent actions.",
     ),
     ActionDef(
-        name="find_people",
-        args=(
-            ActionArg(
-                "person",
-                "str",
-                'The main identifier of the people (name, gender, age, or "person").',
-            ),
-            ActionArg(
-                "person_info",
-                "str",
-                "Additional description of the people: posture (waving, sitting, "
-                "standing, lying), gesture (e.g. raising their left/right arm, "
-                "pointing left/right), clothing colour, or clothing item. May be an "
-                "empty string.",
-            ),
-            ActionArg(
-                "location",
-                "str",
-                "Where to look for the people. Must be a known room or surface.",
-                choices="places",
-            ),
-        ),
-        output="found_people",
-        summary="Find every matching person in a given location (the 'find all' variant of find_person).",
-        output_desc="A list of the unique IDs of the found people, usable in subsequent actions.",
-    ),
-    ActionDef(
         name="guide",
         args=(
             ActionArg(
@@ -297,9 +270,19 @@ ACTIONS: tuple[ActionDef, ...] = (
                 "The person to follow. Must be {found_person}, bound by a preceding find_person.",
                 fixed_value="{found_person}",
             ),
+            ActionArg(
+                "destination",
+                "str",
+                "Where the person is being followed to, when the request names it. Must be a known room or surface. May be an empty string when the request does not say where.",
+                # Grammar-only: the dataset pins this to "places", but the served
+                # grammar must also admit "" (BACKEND_ALIGNMENT sec. 3) -- ~63% of
+                # trained follows leave it empty. `choices` never reaches the
+                # prompt text, so this stays byte-identical to training.
+                choices="places_or_empty",
+            ),
         ),
         output=None,
-        summary="Follows a person identified by their ID. The person must have been found using find_person.",
+        summary="Follows a person identified by their ID, optionally to a stated destination. The person must have been found using find_person.",
         output_desc="",
     ),
     ActionDef(
@@ -314,12 +297,50 @@ ACTIONS: tuple[ActionDef, ...] = (
             ActionArg(
                 "person",
                 "str",
-                "The ID of the person to whom the object will be delivered.",
+                'Who to deliver to: "operator" for the user who gave the instruction, otherwise {found_person} or the person\'s identifier.',
             ),
         ),
         output=None,
-        summary="Delivers a previously picked object to a person. The robot must be holding the object and the person must have been found.",
+        summary="Delivers a previously picked object to a person. The robot must be holding the object.",
         output_desc="",
+    ),
+)
+
+
+# Actions defined but NOT advertised. Kept verbatim so they can be re-enabled by
+# moving the entry back into ACTIONS above -- nothing has to be rewritten.
+#
+# find_people (retired 2026-09-24, dataset-side): its only real source samples are
+# "tell me how many ..." tasks needing a `count` action this schema does not model,
+# which left it advertised with almost no training coverage. Mirrors
+# robot_prompt.RETIRED_ACTIONS in the dataset repo; see BACKEND_ALIGNMENT sec. 2.
+RETIRED_ACTIONS: tuple[ActionDef, ...] = (
+    ActionDef(
+        name="find_people",
+        args=(
+            ActionArg(
+                "person",
+                "str",
+                'The main identifier of the people (name, gender, age, or "person").',
+            ),
+            ActionArg(
+                "person_info",
+                "str",
+                "Additional description of the people: posture (waving, sitting, "
+                "standing, lying), gesture (e.g. raising their left/right arm, "
+                "pointing left/right), clothing colour, or clothing item. May be an "
+                "empty string.",
+            ),
+            ActionArg(
+                "location",
+                "str",
+                "Where to look for the people. Must be a known room or surface.",
+                choices="places",
+            ),
+        ),
+        output="found_people",
+        summary="Find every matching person in a given location (the 'find all' variant of find_person).",
+        output_desc="A list of the unique IDs of the found people, usable in subsequent actions.",
     ),
 )
 
@@ -521,7 +542,7 @@ You are only allowed to use these python functions (actions) in your JSON plans!
 Every action is an object with three keys: "name", a nested "parameters" object, and "output".
 "output" is the variable name an action binds (e.g. "found_object") or null if it returns nothing.
 Reference a previously bound value in later parameters with braces, e.g. "{found_object}".
-To find every matching object/person instead of just one, use the find_objects/find_people actions (they bind "found_objects"/"found_people").
+To find every matching object instead of just one, use the find_objects action (it binds "found_objects").
 <plan>
 [
   {
